@@ -1,0 +1,20 @@
+{
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/*.pyo": true,
+        "**/.idea": true,
+        "**/temp": true,
+        "**/cache": true,
+        "**/*.log": true,
+        "**/meditation_session_*.mp3": true,
+        "**/meditation_session_*.wav": true
+    },
+    "search.exclude": {
+        "**/__pycache__": true,
+        "**/temp": true,
+        "**/cache": true,
+        "**/.idea": true
+    },
+    "git.ignoreLimitWarning": true
+}
