@@ -1,0 +1,25 @@
+{
+  "api_keys": {
+    "deepseek_api_key": "sk-9ec64e20ae244fc8aa7fac849d49e5e2",
+    "deepseek_base_url": "https://api.deepseek.com/v1"
+  },
+  "paths": {
+    "base_dir": "D:/MyMeditationApp",
+    "cache_dir": "D:/MyMeditationApp/cache",
+    "temp_dir": "D:/MyMeditationApp/temp"
+  },
+  "audio_settings": {
+    "music_model": "facebook/musicgen-medium",
+    "tts_voice": "zh-CN-XiaoxiaoNeural",
+    "speech_rate": "-20%",
+    "speech_pitch": "-5Hz",
+    "music_volume_reduction": 25,
+    "output_bitrate": "128k"
+  },
+  "meditation_settings": {
+    "default_duration_minutes": 3,
+    "segment_duration_seconds": 20,
+    "max_duration_minutes": 10,
+    "min_duration_minutes": 1
+  }
+}
