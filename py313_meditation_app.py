@@ -21,6 +21,23 @@ import edge_tts
 # 导入兼容的音频处理模块
 from audio_compat import AudioSegment
 from config_manager import load_config, AppConfig
+from voice_profiles import get_voice_by_emotion, VOICE_PROFILES
+
+# 动态导入预设音乐库（如果启用）
+try:
+    from preset_music_library import PresetMusicLibrary
+    PRESET_MUSIC_AVAILABLE = True
+except ImportError:
+    PRESET_MUSIC_AVAILABLE = False
+    PresetMusicLibrary = None
+
+# 动态导入高质量音乐管理器
+try:
+    from high_quality_music_manager import HighQualityMusicManager
+    HIGH_QUALITY_MUSIC_AVAILABLE = True
+except ImportError:
+    HIGH_QUALITY_MUSIC_AVAILABLE = False
+    HighQualityMusicManager = None
 
 
 class MeditationAppError(Exception):
@@ -54,7 +71,20 @@ class MeditationApp:
         self.music_model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
+        # 预设音乐库（如果启用）
+        self.preset_music_library = None
+        if PRESET_MUSIC_AVAILABLE and getattr(self.config.audio, 'use_preset_music', False):
+            self.preset_music_library = PresetMusicLibrary()
+        
+        # 高质量音乐管理器
+        self.hq_music_manager = None
+        if HIGH_QUALITY_MUSIC_AVAILABLE:
+            self.hq_music_manager = HighQualityMusicManager()
+            self.logger.info("高质量音乐管理器已启用")
+        
         self.logger.info(f"MeditationApp 初始化完成，使用设备: {self.device}")
+        if self.preset_music_library:
+            self.logger.info("预设音乐库已启用")
 
     def _setup_logging(self):
         """设置日志系统"""
@@ -145,7 +175,7 @@ class MeditationApp:
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
+                temperature=0.5,
                 timeout=60.0  # 增加超时时间到60秒
             )
             
@@ -179,10 +209,23 @@ class MeditationApp:
             self.logger.error(error_msg)
             raise MeditationAppError(error_msg)
 
-    async def generate_speech(self, script_prompts: List[Dict]) -> List[str]:
-        """使用 edge-tts 生成语音文件"""
+    async def generate_speech(self, script_prompts: List[Dict], user_input: str = "") -> List[str]:
+        """使用 edge-tts 生成语音文件，支持智能语音选择"""
         self.logger.info("开始生成语音文件")
         print("🔊 正在生成语音文件...")
+        
+        # 智能选择语音
+        if user_input:
+            voice_profile = get_voice_by_emotion(user_input)
+            voice_name = voice_profile['voice']
+            speech_rate = voice_profile['rate']
+            speech_pitch = voice_profile['pitch']
+            print(f"🎙️ 智能选择语音: {voice_profile['description']}")
+        else:
+            # 使用配置文件中的默认设置
+            voice_name = self.config.audio.tts_voice
+            speech_rate = self.config.audio.speech_rate
+            speech_pitch = self.config.audio.speech_pitch
         
         speech_files = []
         
@@ -192,9 +235,9 @@ class MeditationApp:
             try:
                 communicate = edge_tts.Communicate(
                     text=segment["text"], 
-                    voice=self.config.audio.tts_voice,
-                    rate=self.config.audio.speech_rate,
-                    pitch=self.config.audio.speech_pitch
+                    voice=voice_name,
+                    rate=speech_rate,
+                    pitch=speech_pitch
                 )
                 await communicate.save(file_path)
                 speech_files.append(file_path)
@@ -214,10 +257,109 @@ class MeditationApp:
         return speech_files
 
     def generate_music(self, music_prompts: List[Dict]) -> List[str]:
-        """使用 MusicGen 生成背景音乐"""
+        """使用高质量音乐管理器或AI模型生成背景音乐"""
         self.logger.info("开始生成背景音乐")
         print("🎵 正在生成背景音乐...")
         
+        # 优先使用高质量音乐管理器
+        if self.hq_music_manager:
+            return self._generate_hq_music(music_prompts)
+        
+        # 检查是否使用预设音乐
+        if (self.preset_music_library and 
+            getattr(self.config.audio, 'use_preset_music', False)):
+            return self._generate_preset_music(music_prompts)
+        
+        # 检查是否禁用AI音乐生成
+        if not getattr(self.config.audio, 'enable_ai_music', True):
+            print("🔇 AI音乐生成已禁用，使用静音")
+            return self._create_silent_music_files(len(music_prompts))
+        
+        # 使用AI模型生成音乐
+        return self._generate_ai_music(music_prompts)
+    
+    def _generate_hq_music(self, music_prompts: List[Dict]) -> List[str]:
+        """使用高质量音乐管理器生成音乐"""
+        print("🎼 使用高质量音乐管理器...")
+        music_files = []
+        
+        for i, segment in enumerate(music_prompts):
+            file_path = os.path.join(self.config.paths.temp_dir, f"music_{i:02d}.wav")
+            
+            try:
+                # 提取情绪（如果可用）
+                emotion = segment.get('emotion', 'neutral')
+                if not emotion:
+                    # 从内容中推断情绪
+                    content = segment.get('content', '').lower()
+                    if any(word in content for word in ['stress', 'anxiety', 'worry']):
+                        emotion = 'stressed'
+                    elif any(word in content for word in ['sad', 'grief', 'loss']):
+                        emotion = 'sad'
+                    elif any(word in content for word in ['calm', 'peace', 'relax']):
+                        emotion = 'calm'
+                    elif any(word in content for word in ['happy', 'joy', 'positive']):
+                        emotion = 'happy'
+                    else:
+                        emotion = 'neutral'
+                
+                # 使用高质量音乐管理器
+                duration_seconds = self.config.meditation.segment_duration_seconds
+                music_selection = self.hq_music_manager.get_best_music_for_emotion(
+                    emotion, duration_seconds
+                )
+                
+                # 保存音频文件
+                import soundfile as sf
+                sf.write(file_path, music_selection.audio_data, 44100)
+                
+                music_files.append(file_path)
+                print(f"  ✅ 片段 {i+1}: {music_selection.style} ({music_selection.quality_level}质量)")
+                
+            except Exception as e:
+                self.logger.error(f"高质量音乐生成失败，片段 {i}: {e}")
+                # 创建静音文件作为回退
+                silence_duration = self.config.meditation.segment_duration_seconds
+                silence = AudioSegment.silent(duration=int(silence_duration * 1000))
+                silence.export(file_path, format="wav")
+                music_files.append(file_path)
+                print(f"  ⚠️ 片段 {i+1}: 使用静音（生成失败）")
+        
+        return music_files
+    
+    def _generate_preset_music(self, music_prompts: List[Dict]) -> List[str]:
+        """使用预设音乐库生成音乐"""
+        print("🎵 使用预设音乐库（快速模式）...")
+        music_files = []
+        
+        for i, segment in enumerate(music_prompts):
+            file_path = os.path.join(self.config.paths.temp_dir, f"music_{i:02d}.wav")
+            
+            try:
+                # 使用预设音乐库生成
+                duration_seconds = self.config.meditation.segment_duration_seconds
+                music_segment = self.preset_music_library.get_music_segment(segment, duration_seconds)
+                music_segment.export(file_path, format="wav")
+                
+                music_files.append(file_path)
+                print(f"  ✓ 片段 {i+1} 预设音乐生成完成")
+                
+            except Exception as e:
+                self.logger.warning(f"片段 {i+1} 预设音乐生成失败: {e}")
+                print(f"  ⚠️ 片段 {i+1} 预设音乐生成失败，使用静音替代")
+                
+                # 创建静音文件作为备选
+                silence_duration = self.config.meditation.segment_duration_seconds * 1000
+                silence = AudioSegment.silent(duration=silence_duration)
+                silence.export(file_path, format="wav")
+                music_files.append(file_path)
+        
+        self.logger.info(f"预设音乐生成完成，共 {len(music_files)} 个")
+        print(f"✅ 预设音乐生成完成，共 {len(music_files)} 个")
+        return music_files
+    
+    def _generate_ai_music(self, music_prompts: List[Dict]) -> List[str]:
+        """使用AI模型生成音乐"""
         try:
             self.initialize_music_model()
         except Exception as e:
@@ -239,9 +381,14 @@ class MeditationApp:
                 
                 # 生成音乐
                 with torch.no_grad():
+                    # 计算需要的token数量以生成足够长的音乐
+                    # 大约每秒需要80-100个token，20秒需要约1600-2000个token
+                    target_duration_seconds = self.config.meditation.segment_duration_seconds
+                    estimated_tokens = target_duration_seconds * 100  # 每秒100个token
+                    
                     audio_values = self.music_model.generate(
                         **inputs, 
-                        max_new_tokens=512,  # 约20秒
+                        max_new_tokens=estimated_tokens,
                         do_sample=True,
                         guidance_scale=3.0
                     )
@@ -255,11 +402,11 @@ class MeditationApp:
                 )
                 
                 music_files.append(file_path)
-                print(f"  ✓ 片段 {i+1} 音乐生成完成")
+                print(f"  ✓ 片段 {i+1} AI音乐生成完成")
                 
             except Exception as e:
-                self.logger.warning(f"片段 {i+1} 音乐生成失败: {e}")
-                print(f"  ⚠️ 片段 {i+1} 音乐生成失败，使用静音替代")
+                self.logger.warning(f"片段 {i+1} AI音乐生成失败: {e}")
+                print(f"  ⚠️ 片段 {i+1} AI音乐生成失败，使用静音替代")
                 
                 # 创建静音文件作为备选
                 silence_duration = self.config.meditation.segment_duration_seconds * 1000
@@ -267,8 +414,8 @@ class MeditationApp:
                 silence.export(file_path, format="wav")
                 music_files.append(file_path)
         
-        self.logger.info(f"所有音乐文件生成完成，共 {len(music_files)} 个")
-        print(f"✅ 所有音乐文件生成完成，共 {len(music_files)} 个")
+        self.logger.info(f"AI音乐生成完成，共 {len(music_files)} 个")
+        print(f"✅ AI音乐生成完成，共 {len(music_files)} 个")
         return music_files
 
     def _create_silent_music_files(self, count: int) -> List[str]:
@@ -293,6 +440,7 @@ class MeditationApp:
         print("🎧 正在合成最终音频...")
         
         final_audio = AudioSegment.empty()
+        target_segment_duration = self.config.meditation.segment_duration_seconds * 1000  # 转换为毫秒
         
         for i, (speech_file, music_file) in enumerate(zip(speech_files, music_files)):
             try:
@@ -300,30 +448,53 @@ class MeditationApp:
                 speech = AudioSegment.from_file(speech_file)
                 music = AudioSegment.from_file(music_file)
                 
-                # 调整音量：语音为主，音乐为背景
-                music = music - self.config.audio.music_volume_reduction
+                # 使用配置的音量减少值
+                music_reduction = self.config.audio.music_volume_reduction
                 
-                # 确保音乐长度至少和语音一样长
-                if len(music) < len(speech):
-                    padding_duration = len(speech) - len(music)
-                    padding = AudioSegment.silent(duration=padding_duration)
-                    music = music + padding
+                # 调整音量：语音为主，音乐为背景
+                music = music - music_reduction
+                
+                # 确定这个片段的实际长度（以语音和目标时长中的较长者为准）
+                segment_length = max(len(speech), target_segment_duration)
+                
+                # 确保音乐长度足够
+                if len(music) < segment_length:
+                    # 如果音乐太短，通过循环或添加静音来延长
+                    if len(music) > 0:
+                        # 循环音乐直到达到所需长度
+                        repeats_needed = (segment_length // len(music)) + 1
+                        extended_music = AudioSegment.empty()
+                        for _ in range(repeats_needed):
+                            extended_music = extended_music + music
+                        music = extended_music[:segment_length]
+                    else:
+                        # 如果音乐为空，创建静音
+                        music = AudioSegment.silent(duration=segment_length)
                 else:
-                    music = music[:len(speech)]
+                    # 如果音乐太长，截取到所需长度
+                    music = music[:segment_length]
+                
+                # 确保语音长度匹配
+                if len(speech) < segment_length:
+                    padding_duration = segment_length - len(speech)
+                    padding = AudioSegment.silent(duration=padding_duration)
+                    speech = speech + padding
+                else:
+                    speech = speech[:segment_length]
                 
                 # 合并音频
                 combined = music.overlay(speech, position=0)
                 final_audio = final_audio + combined
                 
-                print(f"  ✓ 片段 {i+1} 合成完成")
+                actual_duration_sec = len(combined) / 1000
+                print(f"  ✓ 片段 {i+1} 合成完成 (实际时长: {actual_duration_sec:.1f}秒)")
                 
             except Exception as e:
                 self.logger.warning(f"片段 {i+1} 合成失败: {e}")
                 print(f"  ⚠️ 片段 {i+1} 合成失败，添加静音段")
                 
-                # 添加静音段
-                silence_duration = self.config.meditation.segment_duration_seconds * 1000
-                final_audio = final_audio + AudioSegment.silent(duration=silence_duration)
+                # 添加目标时长的静音段
+                final_audio = final_audio + AudioSegment.silent(duration=target_segment_duration)
         
         # 导出最终音频
         timestamp = int(time.time())
@@ -334,8 +505,14 @@ class MeditationApp:
         
         final_audio.export(output_path, format="wav")  # 使用WAV格式确保兼容性
         
+        # 计算并报告实际时长
+        actual_duration_seconds = len(final_audio) / 1000
+        actual_duration_minutes = actual_duration_seconds / 60
+        
         self.logger.info(f"最终音频合成完成: {output_path}")
+        self.logger.info(f"实际时长: {actual_duration_seconds:.1f}秒 ({actual_duration_minutes:.2f}分钟)")
         print(f"✅ 最终音频合成完成: {output_path}")
+        print(f"📊 实际时长: {actual_duration_seconds:.1f}秒 ({actual_duration_minutes:.2f}分钟)")
         return output_path
 
     def cleanup_temp_files(self):
@@ -406,7 +583,7 @@ class MeditationApp:
             
             # 2. 并行生成语音和音乐
             speech_task = asyncio.create_task(
-                self.generate_speech(prompts_data["script_prompts"])
+                self.generate_speech(prompts_data["script_prompts"], user_input)
             )
             
             # 音乐生成在主线程中进行（因为涉及GPU操作）
