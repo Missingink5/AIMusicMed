@@ -33,12 +33,17 @@ class PathConfig:
 @dataclass
 class AudioConfig:
     """音频配置"""
-    music_model: str = "facebook/musicgen-medium"
+    music_model: str = "facebook/musicgen-small"
     tts_voice: str = "zh-CN-XiaoxiaoNeural"
     speech_rate: str = "-20%"
     speech_pitch: str = "-5Hz"
-    music_volume_reduction: int = 15
-    output_bitrate: str = "128k"
+    music_volume_reduction: int = 8
+    output_bitrate: str = "192k"
+    enable_smart_voice_selection: bool = False
+    enable_ai_music: bool = True
+    use_preset_music: bool = False
+    use_high_quality_music: bool = True
+    music_quality_preference: str = "high"  # "high", "enhanced", "basic"
 
 
 @dataclass
@@ -111,7 +116,10 @@ class AppConfig:
                 "speech_rate": self.audio.speech_rate,
                 "speech_pitch": self.audio.speech_pitch,
                 "music_volume_reduction": self.audio.music_volume_reduction,
-                "output_bitrate": self.audio.output_bitrate
+                "output_bitrate": self.audio.output_bitrate,
+                "enable_smart_voice_selection": self.audio.enable_smart_voice_selection,
+                "enable_ai_music": self.audio.enable_ai_music,
+                "use_preset_music": self.audio.use_preset_music
             },
             "meditation_settings": {
                 "default_duration_minutes": self.meditation.default_duration_minutes,

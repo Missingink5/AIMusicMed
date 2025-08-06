@@ -149,7 +149,7 @@ async def run_session():
         print_session_summary(user_input, duration, config)
         
         # 确认开始
-        confirm = input("是否开始生成冥想会话？(Y/n): ").strip().lower()
+        confirm = input("是否开始生成冥想会话？(Y/N): ").strip().lower()
         if confirm not in ['', 'y', 'yes', '是']:
             print("👋 已取消生成")
             return

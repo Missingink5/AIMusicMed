@@ -10,11 +10,16 @@
   },
   "audio_settings": {
     "music_model": "facebook/musicgen-medium",
-    "tts_voice": "zh-CN-XiaoxiaoNeural",
-    "speech_rate": "-20%",
-    "speech_pitch": "-5Hz",
-    "music_volume_reduction": 25,
-    "output_bitrate": "128k"
+    "tts_voice": "zh-CN-XiaoyiNeural",
+    "speech_rate": "-25%",
+    "speech_pitch": "-8Hz",
+    "music_volume_reduction": 8,
+    "output_bitrate": "192k",
+    "enable_smart_voice_selection": true,
+    "enable_ai_music": false,
+    "use_preset_music": false,
+    "use_high_quality_music": true,
+    "music_quality_preference": "high"
   },
   "meditation_settings": {
     "default_duration_minutes": 3,
