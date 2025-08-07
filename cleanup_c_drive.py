@@ -111,9 +111,9 @@ def optimize_config():
         # 降低音频质量以节省空间
         config["audio_settings"].update({
             "output_bitrate": "128k",  # 降低比特率
-            "use_preset_music": True,   # 优先使用预设音乐避免AI生成
             "enable_ai_music": False,   # 暂时禁用AI音乐以节省缓存
-            "music_quality_preference": "balanced"  # 平衡质量和存储
+            "use_high_quality_music": True,  # 使用高质量音乐管理器
+            "music_quality_preference": "high"  # 高质量生成
         })
         
         # 添加清理设置

@@ -17,9 +17,8 @@
     "output_bitrate": "128k",
     "enable_smart_voice_selection": true,
     "enable_ai_music": true,
-    "use_preset_music": false,
     "use_high_quality_music": true,
-    "music_quality_preference": "balanced"
+    "music_quality_preference": "high"
   },
   "cleanup_settings": {
     "auto_cleanup_temp": true,

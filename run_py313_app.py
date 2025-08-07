@@ -295,8 +295,7 @@ async def run_session():
                 print("🎵 AI音乐生成已启用，使用小型模型以保护C盘空间")
                 print("💾 所有AI模型缓存将保存在D盘")
             else:
-                print("🔒 AI音乐生成已禁用，使用预设音乐库")
-                config.audio.use_preset_music = True
+                print("🔒 AI音乐生成已禁用，将使用静音音乐")
         
         print("✅ 配置加载成功 (已优化空间使用)")
         

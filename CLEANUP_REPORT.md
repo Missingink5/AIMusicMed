@@ -44,7 +44,7 @@
 - ⚙️ `requirements.txt` - Python依赖
 
 ### 音频功能
-- 🎵 `enhanced_music_generator.py` - 音乐生成器
+- 🎵 `high_quality_music_manager.py` - 音乐管理器
 - 🎵 `preset_music_library.py` - 预设音乐库
 - 🎵 `high_quality_music_manager.py` - 高质量音乐管理
 - 📁 `preset_music/` - 预设音乐目录

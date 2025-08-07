@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-项目文件整理脚本
+                    "high_quality_music_manager.py",    # 高质量音乐管理器文件整理脚本
 帮助识别和整理项目中的必需文件和旧文件
 """
 
@@ -27,9 +27,7 @@ class ProjectOrganizer:
                     "config_manager.py",        # 配置管理
                     "audio_compat.py",          # 音频兼容层
                     "voice_profiles.py",        # 语音配置
-                    "preset_music_library.py",  # 预设音乐库
                     "high_quality_music_manager.py",  # 高质量音乐管理器
-                    "enhanced_music_generator.py",    # 增强音乐生成器
                     "config.json",              # 配置文件
                     "requirements.txt"          # 依赖列表
                 ]
@@ -67,7 +65,6 @@ class ProjectOrganizer:
             "data_folders": {
                 "description": "数据和缓存文件夹（保留）",
                 "folders": [
-                    "preset_music/",
                     "voice_samples/",
                     "__pycache__/"
                 ]

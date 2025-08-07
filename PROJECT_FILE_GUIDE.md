@@ -27,15 +27,10 @@
   - 支持高质量预设、增强合成、基础合成
   - 情绪到音乐风格的智能映射
 
-- **`enhanced_music_generator.py`** - 增强音乐生成器
-  - 高质量合成音乐生成
-  - 5种专业音乐风格
-  - 复杂和声、混响、动态变化
-
-- **`preset_music_library.py`** - 预设音乐库
-  - 快速音乐生成，避免AI延迟
-  - 5种音乐类别
-  - 基于numpy的合成音乐
+- **`high_quality_music_manager.py`** - 高质量音乐管理器
+  - 智能音乐选择和管理
+  - 支持多种音乐来源
+  - 简化的合成音乐生成
 
 #### 🎙️ 语音系统
 - **`voice_profiles.py`** - 语音配置模块
@@ -67,10 +62,7 @@
 
 ### 📂 **数据文件夹**（保留）
 
-- **`preset_music/`** - 预设音乐存储
-  - `high_quality/` - 高质量音乐文件
-  - 各种音乐风格的WAV文件
-- **`voice_samples/`** - 语音样本
+- **`voice_samples/`** - 语音样本  
 - **`__pycache__/`** - Python缓存文件
 
 ### 🗂️ **已归档文件**（旧版本）
@@ -102,20 +94,19 @@ python run_py313_app.py
 ```json
 {
   "enable_ai_music": true/false,        // 启用AI音乐生成（慢但质量最高）
-  "use_preset_music": true/false,       // 使用预设音乐库（快）
   "use_high_quality_music": true/false, // 使用高质量音乐管理器
-  "music_quality_preference": "high"    // 质量偏好：high/enhanced/basic
+  "music_quality_preference": "high"    // 质量偏好：high/basic
 }
 ```
 
 ### 当前推荐配置（高质量快速模式）
 ```json
 {
-  "enable_ai_music": true,              // 启用但优先使用预设
-  "use_preset_music": false,            // 不使用简单预设
+  "enable_ai_music": true,              // 启用AI音乐生成
   "use_high_quality_music": true,       // 启用高质量管理器
   "music_quality_preference": "high"    // 优先高质量
 }
+```
 ```
 
 ## 🎯 **性能对比**
@@ -123,8 +114,7 @@ python run_py313_app.py
 | 音乐生成模式 | 质量 | 速度 | 资源消耗 |
 |-------------|------|------|---------|
 | AI生成 | 最高 | 很慢(28分钟) | 很高 |
-| 高质量预设 | 高 | 极快(0.08秒) | 低 |
-| 增强合成 | 中高 | 快(0.16秒) | 低 |
+| 高质量合成 | 高 | 快 | 低 |
 | 基础合成 | 中 | 很快 | 很低 |
 
 ## 🔧 **开发说明**

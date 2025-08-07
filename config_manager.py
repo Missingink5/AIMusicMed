@@ -42,9 +42,8 @@ class AudioConfig:
     output_bitrate: str = "128k"
     enable_smart_voice_selection: bool = False
     enable_ai_music: bool = True
-    use_preset_music: bool = False
     use_high_quality_music: bool = False
-    music_quality_preference: str = "enhanced"
+    music_quality_preference: str = "high"
 
 
 @dataclass

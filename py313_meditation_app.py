@@ -31,14 +31,6 @@ except ImportError:
     AUTO_CLEANER_AVAILABLE = False
     clean_before_session = clean_after_session = lambda: None
 
-# 动态导入预设音乐库（如果启用）
-try:
-    from preset_music_library import PresetMusicLibrary
-    PRESET_MUSIC_AVAILABLE = True
-except ImportError:
-    PRESET_MUSIC_AVAILABLE = False
-    PresetMusicLibrary = None
-
 # 动态导入高质量音乐管理器
 try:
     from high_quality_music_manager import HighQualityMusicManager
@@ -83,10 +75,6 @@ class MeditationApp:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # 预设音乐库（如果启用）
-        self.preset_music_library = None
-        if PRESET_MUSIC_AVAILABLE and getattr(self.config.audio, 'use_preset_music', False):
-            self.preset_music_library = PresetMusicLibrary()
-        
         # 高质量音乐管理器
         self.hq_music_manager = None
         if HIGH_QUALITY_MUSIC_AVAILABLE:
@@ -94,8 +82,6 @@ class MeditationApp:
             self.logger.info("高质量音乐管理器已启用")
         
         self.logger.info(f"MeditationApp 初始化完成，使用设备: {self.device}")
-        if self.preset_music_library:
-            self.logger.info("预设音乐库已启用")
 
     def _setup_logging(self):
         """设置日志系统"""
@@ -276,11 +262,6 @@ class MeditationApp:
         if self.hq_music_manager:
             return self._generate_hq_music(music_prompts)
         
-        # 检查是否使用预设音乐
-        if (self.preset_music_library and 
-            getattr(self.config.audio, 'use_preset_music', False)):
-            return self._generate_preset_music(music_prompts)
-        
         # 检查是否禁用AI音乐生成
         if not getattr(self.config.audio, 'enable_ai_music', True):
             print("🔇 AI音乐生成已禁用，使用静音")
@@ -336,37 +317,6 @@ class MeditationApp:
                 music_files.append(file_path)
                 print(f"  ⚠️ 片段 {i+1}: 使用静音（生成失败）")
         
-        return music_files
-    
-    def _generate_preset_music(self, music_prompts: List[Dict]) -> List[str]:
-        """使用预设音乐库生成音乐"""
-        print("🎵 使用预设音乐库（快速模式）...")
-        music_files = []
-        
-        for i, segment in enumerate(music_prompts):
-            file_path = os.path.join(self.config.paths.temp_dir, f"music_{i:02d}.wav")
-            
-            try:
-                # 使用预设音乐库生成
-                duration_seconds = self.config.meditation.segment_duration_seconds
-                music_segment = self.preset_music_library.get_music_segment(segment, duration_seconds)
-                music_segment.export(file_path, format="wav")
-                
-                music_files.append(file_path)
-                print(f"  ✓ 片段 {i+1} 预设音乐生成完成")
-                
-            except Exception as e:
-                self.logger.warning(f"片段 {i+1} 预设音乐生成失败: {e}")
-                print(f"  ⚠️ 片段 {i+1} 预设音乐生成失败，使用静音替代")
-                
-                # 创建静音文件作为备选
-                silence_duration = self.config.meditation.segment_duration_seconds * 1000
-                silence = AudioSegment.silent(duration=silence_duration)
-                silence.export(file_path, format="wav")
-                music_files.append(file_path)
-        
-        self.logger.info(f"预设音乐生成完成，共 {len(music_files)} 个")
-        print(f"✅ 预设音乐生成完成，共 {len(music_files)} 个")
         return music_files
     
     def _generate_ai_music(self, music_prompts: List[Dict]) -> List[str]:
