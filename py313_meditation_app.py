@@ -23,6 +23,14 @@ from audio_compat import AudioSegment
 from config_manager import load_config, AppConfig
 from voice_profiles import get_voice_by_emotion, VOICE_PROFILES
 
+# 导入自动清理模块
+try:
+    from auto_cleaner import clean_before_session, clean_after_session
+    AUTO_CLEANER_AVAILABLE = True
+except ImportError:
+    AUTO_CLEANER_AVAILABLE = False
+    clean_before_session = clean_after_session = lambda: None
+
 # 动态导入预设音乐库（如果启用）
 try:
     from preset_music_library import PresetMusicLibrary
@@ -63,8 +71,11 @@ class MeditationApp:
             base_url=self.config.api.deepseek_base_url
         )
         
-        # 设置 Hugging Face 缓存
+        # 强制设置所有AI缓存到D盘，避免占用C盘
         os.environ["HF_HOME"] = self.config.paths.cache_dir
+        os.environ["TRANSFORMERS_CACHE"] = os.path.join(self.config.paths.cache_dir, "transformers")
+        os.environ["TORCH_HOME"] = os.path.join(self.config.paths.cache_dir, "torch")
+        os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(self.config.paths.cache_dir, "hub")
         
         # 音乐生成模型（延迟加载）
         self.music_processor = None
@@ -571,6 +582,10 @@ class MeditationApp:
         print(f"🧘‍♀️ 开始创建 {duration_minutes} 分钟的冥想会话...")
         print(f"用户倾诉: {user_input}")
         
+        # 会话前清理
+        if AUTO_CLEANER_AVAILABLE:
+            clean_before_session()
+        
         try:
             # 1. 生成 prompts
             prompts_data = self.generate_prompts(user_input, duration_minutes)
@@ -598,6 +613,10 @@ class MeditationApp:
             # 4. 清理临时文件
             if cleanup:
                 self.cleanup_temp_files()
+            
+            # 会话后清理
+            if AUTO_CLEANER_AVAILABLE:
+                clean_after_session()
             
             session_info.update({
                 "output_file": final_audio_path,

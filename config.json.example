@@ -1,6 +1,6 @@
 {
   "api_keys": {
-    "deepseek_api_key": "sk-9ec64e20ae244fc8aa7fac849d49e5e2",
+    "deepseek_api_key": "YOUR_DEEPSEEK_API_KEY_HERE",
     "deepseek_base_url": "https://api.deepseek.com/v1"
   },
   "paths": {
@@ -25,12 +25,19 @@
     "auto_cleanup_temp": true,
     "max_session_files": 3,
     "cleanup_older_than_days": 3,
-    "force_d_drive_cache": true
+    "force_d_drive_cache": false
   },
   "meditation_settings": {
     "default_duration_minutes": 3,
     "segment_duration_seconds": 20,
-    "max_duration_minutes": 10,
+    "max_duration_minutes": 30,
     "min_duration_minutes": 1
+  },
+  "deployment": {
+    "environment": "production",
+    "log_level": "INFO",
+    "debug": false,
+    "cors_origins": ["*"],
+    "max_workers": 4
   }
 }

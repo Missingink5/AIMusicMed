@@ -13,6 +13,13 @@ huggingface-hub>=0.33.4
 # 音频处理
 pydub>=0.25.1
 edge-tts>=7.0.2
+librosa>=0.10.1
+soundfile>=0.12.1
+
+# Web API框架
+fastapi>=0.104.1
+uvicorn>=0.24.0
+python-multipart>=0.0.6
 
 # 异步处理
 asyncio>=3.4.3
@@ -32,3 +39,4 @@ typing_extensions>=4.14.1
 # 其他工具
 tabulate>=0.9.0
 colorama>=0.4.6
+psutil>=5.9.0

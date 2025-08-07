@@ -238,3 +238,37 @@ asyncio.run(main())
 3. **开发者**: 参考 `audio_compat.py` 了解兼容性实现
 
 **项目评分**: ⭐⭐⭐⭐⭐ **卓越项目！** 现已完全解决Python 3.13兼容性问题。
+
+## 🌐 **FastAPI Web服务版本 (新增)**
+
+### ✅ **Web服务功能**
+- **🚀 FastAPI Web服务**: 完整的RESTful API接口
+- **📱 Web前端界面**: 美观的HTML界面，支持移动端
+- **🔄 会话管理**: 异步后台处理，实时状态查询
+- **🎵 音频服务**: 在线播放和下载功能
+- **📚 API文档**: 自动生成的Swagger UI文档
+
+### 📁 **Web服务文件**
+- **`meditation_api.py`** - FastAPI主服务文件
+- **`meditation_web.html`** - Web前端界面
+- **`start_meditation_api.py`** - 服务启动器
+- **`test_meditation_api.py`** - API测试套件
+- **`quick_api_test.py`** - 快速API测试
+- **`FastAPI_使用说明.md`** - 详细使用说明
+
+### 🚀 **启动Web服务**
+```bash
+# 方法1: 使用启动脚本 (推荐)
+python start_meditation_api.py
+
+# 方法2: 直接启动API
+python meditation_api.py
+
+# 方法3: 使用uvicorn命令
+uvicorn meditation_api:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 🌐 **访问方式**
+- **Web界面**: 打开 `meditation_web.html`
+- **API文档**: http://127.0.0.1:8000/docs
+- **API状态**: http://127.0.0.1:8000/status
