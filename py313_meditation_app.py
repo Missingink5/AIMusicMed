@@ -77,9 +77,11 @@ class MeditationApp:
         # 预设音乐库（如果启用）
         # 高质量音乐管理器
         self.hq_music_manager = None
-        if HIGH_QUALITY_MUSIC_AVAILABLE:
+        if HIGH_QUALITY_MUSIC_AVAILABLE and getattr(self.config.audio, 'use_high_quality_music', False):
             self.hq_music_manager = HighQualityMusicManager()
             self.logger.info("高质量音乐管理器已启用")
+        else:
+            self.logger.info("高质量音乐管理器已禁用，将使用AI音乐生成")
         
         self.logger.info(f"MeditationApp 初始化完成，使用设备: {self.device}")
 
