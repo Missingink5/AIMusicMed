@@ -362,7 +362,7 @@ async def run_session():
                 size = sum(f.stat().st_size for f in cache_path.rglob('*') if f.is_file()) / (1024*1024)
                 if size > 100:  # 大于100MB
                     print(f"⚠️ 发现C盘缓存: {cache_path} ({size:.1f}MB)")
-                    print("   建议运行 python cleanup_c_drive.py 清理")
+                    print("   已自动保护D盘缓存；如需手动清理，请删除该目录或重新运行本程序以自动清空")
         
         # 生成冥想会话前最后一次检查
         monitor_cache_during_run()
@@ -424,8 +424,8 @@ async def run_session():
                         pass
             
             if c_total_size > 50:  # 总缓存大于50MB
-                print(f"   🚨 C盘总缓存: {c_total_size:.1f}MB，建议清理")
-                print("   💡 运行 'python cleanup_c_drive.py' 清理缓存")
+                print(f"   🚨 C盘总缓存: {c_total_size:.1f}MB，建议手动删除 ~/.cache 下相关 huggingface/transformers/torch 目录")
+                print("   💡 也可以退出后重新运行本程序，它会尝试再次清理")
             else:
                 print(f"   ✅ C盘缓存安全: {c_total_size:.1f}MB")
         

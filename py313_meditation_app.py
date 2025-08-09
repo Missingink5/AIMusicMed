@@ -23,13 +23,9 @@ from audio_compat import AudioSegment
 from config_manager import load_config, AppConfig
 from voice_profiles import get_voice_by_emotion, VOICE_PROFILES
 
-# 导入自动清理模块
-try:
-    from auto_cleaner import clean_before_session, clean_after_session
-    AUTO_CLEANER_AVAILABLE = True
-except ImportError:
-    AUTO_CLEANER_AVAILABLE = False
-    clean_before_session = clean_after_session = lambda: None
+# auto_cleaner 模块已删除，保留占位标记与空函数
+AUTO_CLEANER_AVAILABLE = False
+clean_before_session = clean_after_session = lambda: None
 
 # 动态导入高质量音乐管理器
 try:
@@ -77,11 +73,9 @@ class MeditationApp:
         # 预设音乐库（如果启用）
         # 高质量音乐管理器
         self.hq_music_manager = None
-        if HIGH_QUALITY_MUSIC_AVAILABLE and getattr(self.config.audio, 'use_high_quality_music', False):
+        if HIGH_QUALITY_MUSIC_AVAILABLE:
             self.hq_music_manager = HighQualityMusicManager()
             self.logger.info("高质量音乐管理器已启用")
-        else:
-            self.logger.info("高质量音乐管理器已禁用，将使用AI音乐生成")
         
         self.logger.info(f"MeditationApp 初始化完成，使用设备: {self.device}")
 
@@ -534,9 +528,7 @@ class MeditationApp:
         print(f"🧘‍♀️ 开始创建 {duration_minutes} 分钟的冥想会话...")
         print(f"用户倾诉: {user_input}")
         
-        # 会话前清理
-        if AUTO_CLEANER_AVAILABLE:
-            clean_before_session()
+    # auto_cleaner 已移除（占位，无操作）
         
         try:
             # 1. 生成 prompts
@@ -566,9 +558,7 @@ class MeditationApp:
             if cleanup:
                 self.cleanup_temp_files()
             
-            # 会话后清理
-            if AUTO_CLEANER_AVAILABLE:
-                clean_after_session()
+            # auto_cleaner 已移除（占位，无操作）
             
             session_info.update({
                 "output_file": final_audio_path,
