@@ -34,6 +34,7 @@ except ImportError as e:
 from audio_compat import AudioSegment
 from config_manager import load_config, AppConfig
 from voice_profiles import get_voice_by_emotion, VOICE_PROFILES
+from local_music_library import LocalMusicLibrary
 
 # auto_cleaner 模块已删除，保留占位标记与空函数
 AUTO_CLEANER_AVAILABLE = False
@@ -81,6 +82,9 @@ class MeditationApp:
         self.music_processor = None
         self.music_model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # 本地音乐库管理器
+        self.local_music_lib = LocalMusicLibrary()
         
         # 预设音乐库（如果启用）
         # 高质量音乐管理器
@@ -262,21 +266,12 @@ class MeditationApp:
         return speech_files
 
     def generate_music(self, music_prompts: List[Dict]) -> List[str]:
-        """使用高质量音乐管理器或AI模型生成背景音乐"""
-        self.logger.info("开始生成背景音乐")
-        print("🎵 正在生成背景音乐...")
+        """智能音乐生成：优先使用本地音乐库，必要时使用AI生成"""
+        self.logger.info("开始智能音乐生成")
+        print("🎵 正在使用智能音乐选择系统...")
         
-        # 优先使用高质量音乐管理器
-        if self.hq_music_manager:
-            return self._generate_hq_music(music_prompts)
-        
-        # 检查是否禁用AI音乐生成
-        if not getattr(self.config.audio, 'enable_ai_music', True):
-            print("🔇 AI音乐生成已禁用，使用静音")
-            return self._create_silent_music_files(len(music_prompts))
-        
-        # 使用AI模型生成音乐
-        return self._generate_ai_music(music_prompts)
+        # 使用智能音乐选择系统
+        return self._generate_smart_music(music_prompts)
     
     def _generate_hq_music(self, music_prompts: List[Dict]) -> List[str]:
         """使用高质量音乐管理器生成音乐"""
@@ -325,6 +320,116 @@ class MeditationApp:
                 music_files.append(file_path)
                 print(f"  ⚠️ 片段 {i+1}: 使用静音（生成失败）")
         
+        return music_files
+    
+    def _generate_smart_music(self, music_prompts: List[Dict]) -> List[str]:
+        """
+        智能音乐生成：优先使用本地音乐库，失败时回退到AI生成
+        
+        Args:
+            music_prompts: 音乐提示列表
+            
+        Returns:
+            List[str]: 生成的音乐文件路径列表
+        """
+        music_files = []
+        
+        print("🎵 启动智能音乐选择系统...")
+        
+        # 获取本地音乐库状态
+        library_status = self.local_music_lib.get_library_status()
+        total_local_music = sum(library_status.values())
+        
+        if total_local_music > 0:
+            print(f"📚 发现本地音乐库: {total_local_music} 首音乐")
+            print(f"📊 音乐分布: {library_status}")
+            
+            # 尝试使用本地音乐
+            local_music_files = self._generate_local_music(music_prompts)
+            if local_music_files and len(local_music_files) == len(music_prompts):
+                print("✅ 使用本地音乐库")
+                return local_music_files
+            else:
+                print("⚠️ 本地音乐不足，回退到AI生成")
+        else:
+            print("📭 本地音乐库为空，使用AI生成")
+        
+        # 回退到AI生成音乐
+        return self._generate_ai_music(music_prompts)
+    
+    def _generate_local_music(self, music_prompts: List[Dict]) -> List[str]:
+        """
+        使用本地音乐库生成背景音乐
+        
+        Args:
+            music_prompts: 音乐提示列表
+            
+        Returns:
+            List[str]: 本地音乐文件路径列表
+        """
+        print("🎼 使用本地音乐库生成背景音乐...")
+        
+        music_files = []
+        segment_duration = self.config.meditation.segment_duration_seconds
+        
+        # 从音乐提示中提取用户情绪信息
+        # 如果第一个片段包含用户输入，用它来分析情绪
+        user_content = ""
+        if music_prompts and len(music_prompts) > 0:
+            first_segment = music_prompts[0]
+            user_content = first_segment.get('content', '') or first_segment.get('text', '')
+        
+        # 分析用户情绪，确定主要音乐情绪
+        target_emotion = self.local_music_lib.analyze_user_emotion(user_content)
+        
+        for i, segment in enumerate(music_prompts):
+            file_path = os.path.join(self.config.paths.temp_dir, f"music_{i:02d}.wav")
+            
+            try:
+                # 获取本地音乐文件
+                local_music_path = self.local_music_lib.get_music_for_emotion(
+                    target_emotion, segment_duration
+                )
+                
+                if local_music_path and os.path.exists(local_music_path):
+                    # 加载本地音乐
+                    music_segment = AudioSegment.from_file(local_music_path)
+                    
+                    # 调整长度到目标时长
+                    target_length_ms = segment_duration * 1000
+                    if len(music_segment) > target_length_ms:
+                        # 截取前面部分
+                        music_segment = music_segment[:target_length_ms]
+                    elif len(music_segment) < target_length_ms:
+                        # 循环播放以达到目标时长
+                        repeat_times = int(target_length_ms / len(music_segment)) + 1
+                        extended_segment = AudioSegment.empty()
+                        for _ in range(repeat_times):
+                            extended_segment += music_segment
+                        music_segment = extended_segment[:target_length_ms]
+                    
+                    # 导出处理后的音乐片段
+                    music_segment.export(file_path, format="wav")
+                    music_files.append(file_path)
+                    print(f"  ✓ 片段 {i+1}: 使用本地音乐 {os.path.basename(local_music_path)}")
+                    
+                else:
+                    # 本地音乐不可用，创建静音
+                    print(f"  ⚠️ 片段 {i+1}: 本地音乐不可用，使用静音")
+                    silence = AudioSegment.silent(duration=segment_duration * 1000)
+                    silence.export(file_path, format="wav")
+                    music_files.append(file_path)
+                    
+            except Exception as e:
+                self.logger.warning(f"本地音乐处理失败，片段 {i}: {e}")
+                print(f"  ⚠️ 片段 {i+1}: 处理失败，使用静音")
+                
+                # 创建静音作为回退
+                silence = AudioSegment.silent(duration=segment_duration * 1000)
+                silence.export(file_path, format="wav")
+                music_files.append(file_path)
+        
+        print(f"🎵 本地音乐生成完成，共 {len(music_files)} 个片段")
         return music_files
     
     def _generate_ai_music(self, music_prompts: List[Dict]) -> List[str]:
