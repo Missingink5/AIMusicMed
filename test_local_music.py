@@ -60,34 +60,46 @@ def test_local_music_library():
     print("\n✅ 测试完成!")
 
 def create_demo_audio_files():
-    """创建一些演示音频文件（静音文件）"""
+    """提供音乐文件添加说明（不自动创建文件）"""
     
-    print("\n🎵 创建演示音频文件...")
+    print("\n📁 本地音乐库文件添加说明...")
+    print("=" * 50)
+    print("本地音乐库需要您手动添加音乐文件，不会自动生成任何文件。")
+    print("\n📂 请在以下目录中添加您喜欢的音乐文件：")
     
-    try:
-        from audio_compat import AudioSegment
-    except ImportError:
-        print("❌ 无法导入 AudioSegment，跳过音频文件创建")
-        return
+    emotions_info = {
+        "Quiet": "平静、冥想、放松类音乐",
+        "Happy": "欢快、积极、振奋类音乐", 
+        "Sad": "悲伤、抒情、治愈类音乐",
+        "Anxiety": "舒缓、安抚、减压类音乐",
+        "Hostility": "缓和、平复、宁静类音乐",
+        "Pride": "自信、成就、激励类音乐",
+        "Love": "温暖、关爱、友善类音乐"
+    }
     
-    # 创建一些简短的静音音频文件作为演示
-    emotions = ["Quiet", "Happy", "Sad", "Anxiety", "Hostility", "Pride", "Love"]
-    
-    for emotion in emotions:
+    for emotion, description in emotions_info.items():
         emotion_dir = os.path.join("music_library", emotion)
+        print(f"  📁 {emotion_dir}/")
+        print(f"     适合: {description}")
         
-        # 为每种情绪创建2-3个演示文件
-        for i in range(3):
-            filename = f"demo_{emotion}_{i+1}.wav"
-            file_path = os.path.join(emotion_dir, filename)
-            
-            if not os.path.exists(file_path):
-                # 创建30秒的静音音频作为演示
-                silence = AudioSegment.silent(duration=30000)  # 30秒
-                silence.export(file_path, format="wav")
-                print(f"  ✓ 创建: {file_path}")
+        # 检查目录中已有的文件
+        if os.path.exists(emotion_dir):
+            files = [f for f in os.listdir(emotion_dir) if f.lower().endswith(('.mp3', '.wav', '.m4a', '.flac', '.ogg'))]
+            if files:
+                print(f"     当前有 {len(files)} 个音乐文件")
+            else:
+                print(f"     当前为空，请添加音乐文件")
+        else:
+            print(f"     目录不存在，请先创建")
+        print()
     
-    print("✅ 演示音频文件创建完成!")
+    print("💡 建议的音乐文件格式：")
+    print("  - 格式：MP3, WAV, M4A, FLAC, OGG")
+    print("  - 时长：30秒 - 3分钟")
+    print("  - 质量：128-320 kbps")
+    print("  - 数量：每个情绪目录 5-20 首")
+    
+    print("\n✅ 音乐库说明完成！请手动添加您的音乐文件。")
 
 if __name__ == "__main__":
     print("🎵 本地音乐库测试程序")
@@ -101,9 +113,9 @@ if __name__ == "__main__":
     # 运行测试
     test_local_music_library()
     
-    # 询问是否创建演示文件
+    # 询问是否查看音乐文件添加说明
     print("\n" + "=" * 60)
-    response = input("是否创建演示音频文件？(y/n): ").lower().strip()
+    response = input("是否查看音乐文件添加说明？(y/n): ").lower().strip()
     if response in ['y', 'yes', '是']:
         create_demo_audio_files()
         print("\n重新测试音乐库:")
