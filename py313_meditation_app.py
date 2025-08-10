@@ -14,7 +14,6 @@ import time
 
 from openai import OpenAI
 from transformers import MusicgenForConditionalGeneration, AutoProcessor
-import scipy
 import torch
 import edge_tts
 
@@ -350,13 +349,12 @@ class MeditationApp:
                         guidance_scale=3.0
                     )
                 
-                # 保存音频
+                # 保存音频（使用 soundfile 代替 scipy.io.wavfile.write 以移除 scipy 依赖）
+                import soundfile as sf
                 sample_rate = self.music_model.config.audio_encoder.sampling_rate
-                scipy.io.wavfile.write(
-                    file_path,
-                    rate=sample_rate,
-                    data=audio_values[0, 0].cpu().numpy()
-                )
+                audio_array = audio_values[0, 0].cpu().numpy()
+                # transformers MusicGen 输出通常为 float32 [-1,1]，直接写入保持浮点精度
+                sf.write(file_path, audio_array, sample_rate)
                 
                 music_files.append(file_path)
                 print(f"  ✓ 片段 {i+1} AI音乐生成完成")
