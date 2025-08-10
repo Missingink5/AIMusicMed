@@ -15,13 +15,13 @@ PythonProject/
 ├── local_music_library.py       # 本地音乐库管理器
 ├── music_library/               # 音乐文件目录
 │   ├── README.md               # 音乐库说明
-│   ├── 平静/                    # 平静类音乐
-│   ├── 喜悦/                    # 喜悦类音乐
-│   ├── 忧郁/                    # 忧郁类音乐
-│   ├── 焦虑/                    # 焦虑类音乐
-│   ├── 敌意/                    # 敌意类音乐
-│   ├── 自豪/                    # 自豪类音乐
-│   └── 友爱/                    # 友爱类音乐
+│   ├── Quiet/                  # 平静类音乐
+│   ├── Happy/                  # 喜悦类音乐
+│   ├── Sad/                    # 忧郁类音乐
+│   ├── Anxiety/                # 焦虑类音乐
+│   ├── Hostility/              # 敌意类音乐
+│   ├── Pride/                  # 自豪类音乐
+│   └── Love/                   # 友爱类音乐
 ├── test_local_music.py          # 本地音乐库测试脚本
 └── deploy_to_server.py          # 服务器部署脚本
 ```
@@ -52,13 +52,13 @@ def _generate_smart_music(self, music_prompts):
 
 | 用户表达关键词 | 检测情绪 | 对应音乐目录 |
 |---|---|---|
-| 压力、焦虑、担心 | 焦虑 | `music_library/焦虑/` |
-| 愤怒、生气、烦躁 | 敌意 | `music_library/敌意/` |
-| 悲伤、沮丧、失望 | 忧郁 | `music_library/忧郁/` |
-| 平静、放松、安心 | 平静 | `music_library/平静/` |
-| 开心、快乐、兴奋 | 喜悦 | `music_library/喜悦/` |
-| 成就、骄傲、自信 | 自豪 | `music_library/自豪/` |
-| 温暖、关爱、感谢 | 友爱 | `music_library/友爱/` |
+| 压力、焦虑、担心 | 焦虑 | `music_library/Anxiety/` |
+| 愤怒、生气、烦躁 | 敌意 | `music_library/Hostility/` |
+| 悲伤、沮丧、失望 | 忧郁 | `music_library/Sad/` |
+| 平静、放松、安心 | 平静 | `music_library/Quiet/` |
+| 开心、快乐、兴奋 | 喜悦 | `music_library/Happy/` |
+| 成就、骄傲、自信 | 自豪 | `music_library/Pride/` |
+| 温暖、关爱、感谢 | 友爱 | `music_library/Love/` |
 
 ## 🚀 部署步骤
 
@@ -78,11 +78,11 @@ python test_local_music.py
 
 ```bash
 music_library/
-├── 平静/
+├── Quiet/
 │   ├── meditation_01.mp3
 │   ├── nature_sounds.wav
 │   └── calm_piano.mp3
-├── 喜悦/
+├── Happy/
 │   ├── upbeat_01.mp3
 │   └── happy_melody.wav
 # ... 其他情绪目录

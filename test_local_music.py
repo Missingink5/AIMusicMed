@@ -71,7 +71,7 @@ def create_demo_audio_files():
         return
     
     # 创建一些简短的静音音频文件作为演示
-    emotions = ["平静", "喜悦", "忧郁", "焦虑", "敌意", "自豪", "友爱"]
+    emotions = ["Quiet", "Happy", "Sad", "Anxiety", "Hostility", "Pride", "Love"]
     
     for emotion in emotions:
         emotion_dir = os.path.join("music_library", emotion)
