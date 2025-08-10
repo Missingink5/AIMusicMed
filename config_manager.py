@@ -45,6 +45,16 @@ class PathConfig:
     def __post_init__(self):
         # 解析并标准化 base_dir
         self.base_dir = os.path.abspath(self._resolve_base()) if not (os.name == 'nt' and self._resolve_base().startswith(('D:', 'd:'))) else self._resolve_base()
+        # Linux/Unix 下若用户配置了 /app* 且非 root, 直接预判不可写回退
+        try:
+            if os.name != 'nt':
+                uid = os.geteuid() if hasattr(os, 'geteuid') else None
+                if self.base_dir.startswith('/app') and (uid not in (0, None)):
+                    fallback = os.path.expanduser('~/meditation_app')
+                    print(f"⚠️ 检测到可能不可写目录 {self.base_dir}, 提前回退到 {fallback}")
+                    self.base_dir = fallback
+        except Exception:
+            pass
         if self.cache_dir is None:
             self.cache_dir = os.path.join(self.base_dir, "cache")
         if self.temp_dir is None:
@@ -103,18 +113,15 @@ class AppConfig:
     
     def create_directories(self):
         """创建必要的目录"""
-        directories = [
-            self.paths.base_dir,
-            self.paths.cache_dir,
-            self.paths.temp_dir
-        ]
-        
-        # 若当前 base_dir 不可写则回退
+        # 先尝试保证可写, 若回退 base_dir 会更新 path 属性
         self.paths.ensure_writable()
+        # 回退后重新构建目录列表
+        directories = [self.paths.base_dir, self.paths.cache_dir, self.paths.temp_dir]
         for directory in directories:
+            if not directory:
+                continue
             try:
-                if directory and not os.path.exists(directory):
-                    os.makedirs(directory, exist_ok=True)
+                os.makedirs(directory, exist_ok=True)
             except PermissionError:
                 print(f"❌ 无法创建目录: {directory} (权限不足)")
                 raise
@@ -174,7 +181,10 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
     """Load configuration with priority: config file > environment variables"""
     if config_path and os.path.exists(config_path):
         try:
-            return AppConfig.from_json(config_path)
+            cfg = AppConfig.from_json(config_path)
+            # 立即确保可写并可能回退
+            cfg.paths.ensure_writable()
+            return cfg
         except Exception as e:
             print(f"⚠️ Failed to load from config file: {e}")
     
@@ -182,13 +192,17 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
     default_config_path = "config.json"
     if os.path.exists(default_config_path):
         try:
-            return AppConfig.from_json(default_config_path)
+            cfg = AppConfig.from_json(default_config_path)
+            cfg.paths.ensure_writable()
+            return cfg
         except Exception as e:
             print(f"⚠️ Failed to load from default config file: {e}")
     
     # Try loading from environment variables
     try:
-        return AppConfig.from_env()
+        cfg = AppConfig.from_env()
+        cfg.paths.ensure_writable()
+        return cfg
     except Exception as e:
         print(f"❌ Failed to load from environment variables: {e}")
     
