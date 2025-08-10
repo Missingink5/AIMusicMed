@@ -1,29 +1,30 @@
 # AI 冥想助手 - 依赖包列表
 # 安装命令: pip install -r requirements.txt
 
-###############################
-# 精简依赖 (最小可运行集)
-# 说明: 移除了 torchaudio / scipy(直接依赖) / pydub / fastapi 等未使用组件，
-# 仅保留冥想脚本、AI 文本与音乐生成、TTS 与音频合成所需库。
-###############################
+###############################################
+# 最小运行依赖 (兼容国内镜像 & GPU 环境)
+# 说明:
+# - 去掉 torchaudio / fastapi / pydub 等未使用组件
+# - librosa==0.10.1 仍依赖 numpy < 2.0 与 scipy <2；镜像只有最高 scipy 1.15.x，
+#   因此将 numpy 约束为 <2.0 以避免 pip 去解析 scipy>=1.16.0 的新组合。
+# - 不显式写 scipy；pip 会为 librosa 自动选取兼容版本 (<=1.15.3)。
+###############################################
 
-# 核心 AI 接口
+# 核心 AI
 openai>=1.98.0
 transformers>=4.53.3
-torch>=2.7.1
+torch>=2.7.0
 
-# 音频处理 (AudioSegment 依赖)
-librosa>=0.10.1       # 会自动拉取兼容的 numpy / scipy 版本，无需显式指定 scipy
+# 音频与 TTS
+librosa==0.10.1
 soundfile>=0.12.1
-edge-tts>=7.0.2       # 依赖 aiohttp，自行安装
+edge-tts>=7.0.2
 
-# 基础工具
-numpy>=2.3.1
-requests>=2.32.4
+# 工具
+numpy>=1.24,<2.0
+requests>=2.32.0
 tqdm>=4.67.1
-typing_extensions>=4.14.1
+typing_extensions>=4.8.0
 
-# 说明:
-# 1. 如果后续需要 Web API，再添加 fastapi / uvicorn。
-# 2. 如需更高性能可选添加 accelerate / huggingface-hub，但当前非必需。
-# 3. 不再显式固定 scipy，避免镜像源缺少新版导致安装失败。
+# 可选(需要时再添加):
+# fastapi uvicorn accelerate huggingface-hub pydantic
