@@ -1,12 +1,12 @@
 {
   "api_keys": {
-    "deepseek_api_key": "sk-9ec64e20ae244fc8aa7fac849d49e5e2",
+    "deepseek_api_key": "PUT_YOUR_KEY_OR_USE_ENV",
     "deepseek_base_url": "https://api.deepseek.com/v1"
   },
   "paths": {
-    "base_dir": "/app/data",
-    "cache_dir": "/app/cache",
-    "temp_dir": "/app/temp"
+    "base_dir": "",
+    "cache_dir": "",
+    "temp_dir": ""
   },
   "audio_settings": {
     "music_model": "facebook/musicgen-small",
