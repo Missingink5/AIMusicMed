@@ -8,9 +8,10 @@ import json
 import re
 import asyncio
 import logging
+import requests
+import time
 from typing import List, Dict, Optional, Tuple
 from dataclasses import asdict
-import time
 
 try:
     from openai import OpenAI
@@ -133,90 +134,245 @@ class MeditationApp:
                 self.logger.error(f"音乐模型加载失败: {e}")
                 raise MeditationAppError(f"音乐模型加载失败: {e}")
 
+    def plan_emotion_journey(self, user_input: str, duration_minutes: int) -> List[Dict]:
+        """
+        规划情绪转换旅程：消极情绪 → 中性平静 → 积极情绪
+        
+        Args:
+            user_input: 用户倾诉内容
+            duration_minutes: 冥想总时长
+            
+        Returns:
+            List[Dict]: 情绪转换计划，包含每个阶段的情绪、时长、描述
+        """
+        # 分析用户当前情绪
+        current_emotion = self.local_music_lib.analyze_user_emotion(user_input)
+        
+        # 定义情绪转换映射
+        emotion_journey_map = {
+            # 消极情绪的转换路径
+            "忧郁": ["忧郁", "平静", "友爱"],      # 悲伤 → 平静 → 关爱
+            "焦虑": ["焦虑", "平静", "喜悦"],      # 焦虑 → 平静 → 喜悦  
+            "敌意": ["敌意", "平静", "友爱"],      # 愤怒 → 平静 → 友爱
+            # 中性情绪的转换路径
+            "平静": ["平静", "友爱", "喜悦"],      # 平静 → 友爱 → 喜悦
+            # 积极情绪的维持路径
+            "喜悦": ["喜悦", "平静", "喜悦"],      # 喜悦 → 平静 → 喜悦
+            "自豪": ["自豪", "平静", "友爱"],      # 自豪 → 平静 → 友爱
+            "友爱": ["友爱", "平静", "喜悦"],      # 友爱 → 平静 → 喜悦
+        }
+        
+        # 获取情绪转换路径
+        emotion_path = emotion_journey_map.get(current_emotion, ["平静", "友爱", "喜悦"])
+        
+        # 计算每个阶段的时长（动态分配）
+        total_seconds = duration_minutes * 60
+        
+        if current_emotion in ["忧郁", "焦虑", "敌意"]:
+            # 消极情绪：更长的缓解阶段
+            stage_durations = [
+                int(total_seconds * 0.4),  # 40% 缓解当前消极情绪
+                int(total_seconds * 0.35), # 35% 转向平静
+                int(total_seconds * 0.25)  # 25% 培养积极情绪
+            ]
+        elif current_emotion == "平静":
+            # 中性情绪：平衡分配
+            stage_durations = [
+                int(total_seconds * 0.3),  # 30% 维持平静
+                int(total_seconds * 0.4),  # 40% 培养连接感
+                int(total_seconds * 0.3)   # 30% 培养喜悦
+            ]
+        else:
+            # 积极情绪：维持和深化
+            stage_durations = [
+                int(total_seconds * 0.35), # 35% 维持当前积极情绪
+                int(total_seconds * 0.3),  # 30% 深度平静
+                int(total_seconds * 0.35)  # 35% 强化积极情绪
+            ]
+        
+        # 构建情绪旅程计划
+        emotion_journey = []
+        current_time = 0
+        
+        for i, (emotion, duration) in enumerate(zip(emotion_path, stage_durations)):
+            # 英文情绪映射（用于音乐目录）
+            emotion_en_map = {
+                "忧郁": "Sad", "焦虑": "Anxiety", "敌意": "Hostility",
+                "平静": "Quiet", "喜悦": "Happy", "自豪": "Pride", "友爱": "Love"
+            }
+            
+            # 情绪阶段描述
+            stage_descriptions = {
+                0: "接纳和缓解当前情绪",
+                1: "转向内心平静",
+                2: "培养积极的情绪状态"
+            }
+            
+            emotion_journey.append({
+                "stage": i + 1,
+                "emotion_cn": emotion,
+                "emotion_en": emotion_en_map.get(emotion, "Quiet"),
+                "start_time": current_time,
+                "duration": duration,
+                "end_time": current_time + duration,
+                "description": stage_descriptions.get(i, "情绪调节"),
+                "time_percentage": duration / total_seconds
+            })
+            
+            current_time += duration
+        
+        self.logger.info(f"情绪转换计划: {current_emotion} → {' → '.join(emotion_path)}")
+        print(f"🧭 情绪引导路径: {current_emotion} → {' → '.join(emotion_path)}")
+        
+        return emotion_journey
+
     def generate_prompts(self, user_input: str, duration_minutes: int = None) -> Dict:
-        """根据用户倾诉生成结构化的 prompts"""
-        if duration_minutes is None:
-            duration_minutes = self.config.meditation.default_duration_minutes
-            
-        # 限制时长范围
-        duration_minutes = max(
-            self.config.meditation.min_duration_minutes,
-            min(self.config.meditation.max_duration_minutes, duration_minutes)
-        )
-        
-        self.logger.info(f"开始生成 prompts，时长: {duration_minutes} 分钟")
-        print("🤖 正在生成 prompts...")
-        
-        # 计算时间段数量
-        segments = (duration_minutes * 60) // self.config.meditation.segment_duration_seconds
-        
-        prompt = f"""
-你是一位温柔、专业的冥想教练和音乐治疗师，现在有用户向你倾诉了内心的烦恼。
-请你根据用户的倾诉内容，返回一个结构化 JSON，完成以下任务：
-
-1. 用一两句话进行真诚、温柔的安慰；
-2. 将整个冥想体验分为 {segments} 个时间段，每段持续 {self.config.meditation.segment_duration_seconds} 秒；
-3. 针对每个时间段：
-   - 生成一个适合该时刻的冥想引导语（30-50字，温柔指导）；
-   - 生成一个用于 AI 背景音乐生成的音乐 prompt（英文，描述音乐风格与情绪）；
-
-请将以上内容用如下 JSON 结构输出：
-
-{{
-  "comfort": "一句安慰语...",
-  "script_prompts": [
-    {{ "time": "00:00", "text": "现在，请找到一个舒适的位置坐下..." }},
-    {{ "time": "00:20", "text": "轻轻闭上眼睛，开始关注你的呼吸..." }},
-    ...
-  ],
-  "music_prompts": [
-    {{ "time": "00:00", "prompt": "soft ambient meditation music with gentle nature sounds" }},
-    {{ "time": "00:20", "prompt": "calming instrumental music with slow piano melodies" }},
-    ...
-  ]
-}}
-
-用户的倾诉如下：
-【{user_input}】
-"""
-
+        """生成情绪转换冥想提示词，遵循消极→中性→积极的情绪旅程"""
         try:
-            response = self.client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.5,
-                timeout=60.0  # 增加超时时间到60秒
-            )
+            # 使用默认时长
+            if duration_minutes is None:
+                duration_minutes = self.config.get('default_duration', 10)
             
-            content = response.choices[0].message.content.strip()
+            self.logger.info(f"开始生成情绪转换冥想提示词，时长: {duration_minutes}分钟")
             
-            # 提取 JSON
-            match = re.search(r"{.*}", content, re.DOTALL)
-            if not match:
-                raise ValueError("无法找到 JSON 格式的响应")
+            # 规划情绪转换旅程
+            emotion_journey = self.plan_emotion_journey(user_input, duration_minutes)
+            
+            # 准备音乐选择和情绪分析
+            current_emotion = self.local_music_lib.analyze_user_emotion(user_input)
+            print(f"😊 用户当前情绪: {current_emotion}")
+            print("🎭 情绪转换计划:")
+            for stage in emotion_journey:
+                print(f"  阶段{stage['stage']}: {stage['emotion_cn']} ({stage['duration']}秒) - {stage['description']}")
+            
+            # 准备DeepSeek API调用
+            url = "https://api.deepseek.com/v1/chat/completions"
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.config.api.deepseek_api_key}"
+            }
+            
+            # 构建情绪转换指导的系统提示词
+            journey_description = " → ".join([stage['emotion_cn'] for stage in emotion_journey])
+            
+            system_prompt = f"""你是一位专业的情绪转换冥想指导师，专精于引导用户通过音乐和冥想实现情绪的健康转换。
+
+情绪转换计划：{journey_description}
+总时长：{duration_minutes}分钟
+
+情绪转换阶段：
+"""
+            
+            # 添加每个阶段的详细描述
+            for stage in emotion_journey:
+                system_prompt += f"""
+阶段{stage['stage']} ({stage['duration']}秒): {stage['emotion_cn']}情绪
+- 描述: {stage['description']}
+- 音乐情绪: {stage['emotion_en']}
+- 时间占比: {stage['time_percentage']:.1%}"""
+            
+            system_prompt += f"""
+
+任务要求：
+1. 严格按照上述情绪转换阶段生成冥想引导
+2. 每个阶段生成2个音频段落，总共6个段落
+3. 引导语要与音乐情绪同步，帮助用户跟随音乐进行情绪转换
+4. 语言风格：温和、支持性、具有治愈力
+5. 呼吸引导：在每个阶段融入适合的呼吸技巧
+6. 平滑过渡：确保情绪转换自然流畅，不突兀
+
+返回格式为JSON：
+{{
+    "analysis": "用户情绪分析和转换目标",
+    "emotion_journey": "{journey_description}",
+    "script_prompts": [
+        "阶段1前半段：{emotion_journey[0]['emotion_cn']}情绪引导语",
+        "阶段1后半段：{emotion_journey[0]['emotion_cn']}情绪深化语", 
+        "阶段2前半段：{emotion_journey[1]['emotion_cn']}情绪转换语",
+        "阶段2后半段：{emotion_journey[1]['emotion_cn']}情绪稳定语",
+        "阶段3前半段：{emotion_journey[2]['emotion_cn']}情绪培养语",
+        "阶段3后半段：{emotion_journey[2]['emotion_cn']}情绪巩固语"
+    ],
+    "music_prompts": [
+        "阶段1前半段：{emotion_journey[0]['emotion_en']}音乐（匹配用户当前情绪）",
+        "阶段1后半段：{emotion_journey[0]['emotion_en']}音乐（开始缓解）",
+        "阶段2前半段：{emotion_journey[1]['emotion_en']}音乐（转向平静）", 
+        "阶段2后半段：{emotion_journey[1]['emotion_en']}音乐（深化平静）",
+        "阶段3前半段：{emotion_journey[2]['emotion_en']}音乐（培养积极）",
+        "阶段3后半段：{emotion_journey[2]['emotion_en']}音乐（巩固收尾）"
+    ],
+    "stage_timings": [
+        {{"stage": 1, "duration": {emotion_journey[0]['duration']}, "emotion": "{emotion_journey[0]['emotion_cn']}"}},
+        {{"stage": 2, "duration": {emotion_journey[1]['duration']}, "emotion": "{emotion_journey[1]['emotion_cn']}"}},
+        {{"stage": 3, "duration": {emotion_journey[2]['duration']}, "emotion": "{emotion_journey[2]['emotion_cn']}"}}
+    ]
+}}"""
+            
+            user_prompt = f"""用户倾诉：{user_input}
+
+检测到的当前情绪：{current_emotion}
+请为这位用户生成{duration_minutes}分钟的情绪转换冥想指导，帮助用户从{current_emotion}情绪逐步转换到积极平和的状态。
+
+特别注意：
+- 冥想指导语要引导用户情绪跟随音乐的情绪转换
+- 在第一阶段认可和接纳用户当前的{current_emotion}情绪
+- 在第二阶段温和地引导向平静过渡
+- 在第三阶段培养积极正面的情绪体验"""
+            
+            # 调用DeepSeek API
+            data = {
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 3000
+            }
+            
+            response = requests.post(url, headers=headers, json=data, timeout=30)
+            response.raise_for_status()
+            
+            response_data = response.json()
+            content = response_data['choices'][0]['message']['content']
+            
+            # 解析JSON响应
+            try:
+                prompts_data = json.loads(content)
                 
-            json_text = match.group(0)
-            result = json.loads(json_text)
-            
-            # 验证结果格式
-            if not all(key in result for key in ["comfort", "script_prompts", "music_prompts"]):
-                raise ValueError("返回的JSON格式不正确")
-            
-            # 保存结果
-            output_path = os.path.join(self.config.paths.base_dir, "session_prompts.json")
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-            
-            script_count = len(result.get('script_prompts', []))
-            self.logger.info(f"Prompts 生成完成，共 {script_count} 个片段")
-            print(f"✅ Prompts 生成完成，共 {script_count} 个片段")
-            
-            return result
-            
+                # 验证响应格式
+                required_keys = ['analysis', 'emotion_journey', 'script_prompts', 'music_prompts', 'stage_timings']
+                if not all(key in prompts_data for key in required_keys):
+                    raise ValueError("API响应缺少必要字段")
+                
+                if len(prompts_data['script_prompts']) != 6 or len(prompts_data['music_prompts']) != 6:
+                    raise ValueError("提示词数量不正确")
+                
+                # 添加情绪转换元信息
+                prompts_data.update({
+                    'user_emotion': current_emotion,
+                    'emotion_journey_plan': emotion_journey,
+                    'total_duration': duration_minutes,
+                    'timestamp': time.time()
+                })
+                
+                self.logger.info("情绪转换提示词生成成功")
+                print(f"✅ 生成了 {len(prompts_data['script_prompts'])} 段情绪转换冥想引导")
+                print(f"🎭 情绪旅程: {prompts_data['emotion_journey']}")
+                print(f"📋 分析结果: {prompts_data['analysis'][:100]}...")
+                
+                return prompts_data
+                
+            except json.JSONDecodeError as e:
+                self.logger.error(f"JSON解析失败: {e}, 内容: {content[:200]}")
+                raise MeditationAppError(f"提示词解析失败: {e}")
+        
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"API请求失败: {e}")
+            raise MeditationAppError(f"网络请求失败: {e}")
         except Exception as e:
-            error_msg = f"生成 prompts 失败: {e}"
-            self.logger.error(error_msg)
-            raise MeditationAppError(error_msg)
+            self.logger.error(f"提示词生成失败: {e}")
+            raise MeditationAppError(f"提示词生成失败: {e}")
 
     async def generate_speech(self, script_prompts: List[Dict], user_input: str = "") -> List[str]:
         """使用 edge-tts 生成语音文件，支持智能语音选择"""
@@ -265,13 +421,20 @@ class MeditationApp:
         print(f"✅ 所有语音文件生成完成，共 {len(speech_files)} 个")
         return speech_files
 
-    def generate_music(self, music_prompts: List[Dict]) -> List[str]:
-        """智能音乐生成：优先使用本地音乐库，必要时使用AI生成"""
+    def generate_music(self, music_prompts: List[Dict], emotion_journey: List[Dict] = None) -> List[str]:
+        """智能音乐生成：优先使用本地音乐库，支持情绪转换序列"""
         self.logger.info("开始智能音乐生成")
-        print("🎵 正在使用智能音乐选择系统...")
         
-        # 使用智能音乐选择系统
-        return self._generate_smart_music(music_prompts)
+        # 如果有情绪转换计划，使用情绪转换音乐系统
+        if emotion_journey and len(emotion_journey) > 0:
+            print("� 使用情绪转换音乐系统...")
+            # 提取音乐提示文本
+            music_prompt_texts = [prompt if isinstance(prompt, str) else prompt.get('prompt', '') for prompt in music_prompts]
+            return self._generate_emotion_journey_music(music_prompt_texts, emotion_journey)
+        else:
+            print("🎵 使用标准智能音乐选择系统...")
+            # 使用标准智能音乐选择系统
+            return self._generate_smart_music(music_prompts)
     
     def _generate_hq_music(self, music_prompts: List[Dict]) -> List[str]:
         """使用高质量音乐管理器生成音乐"""
@@ -356,6 +519,97 @@ class MeditationApp:
         
         # 回退到AI生成音乐
         return self._generate_ai_music(music_prompts)
+    
+    def _generate_emotion_journey_music(self, music_prompts: List[str], emotion_journey: List[Dict]) -> List[str]:
+        """
+        根据情绪转换计划生成音乐序列
+        
+        Args:
+            music_prompts: 音乐提示列表
+            emotion_journey: 情绪转换计划
+            
+        Returns:
+            List[str]: 音乐文件路径列表
+        """
+        print("🎭 使用情绪转换音乐系统...")
+        
+        music_files = []
+        
+        # 根据情绪转换计划生成6个音乐片段（每阶段2个）
+        for i, music_prompt in enumerate(music_prompts):
+            file_path = os.path.join(self.config.paths.temp_dir, f"music_{i:02d}.wav")
+            
+            # 确定当前片段对应的情绪阶段
+            stage_index = i // 2  # 每阶段2个片段
+            if stage_index < len(emotion_journey):
+                current_stage = emotion_journey[stage_index]
+                target_emotion_en = current_stage['emotion_en']
+                segment_duration = current_stage['duration'] // 2  # 每阶段分为2个片段
+                
+                print(f"  片段 {i+1}: {current_stage['emotion_cn']} ({target_emotion_en}) - {segment_duration}秒")
+                
+                try:
+                    # 尝试从本地音乐库获取对应情绪的音乐
+                    local_music_path = self.local_music_lib.get_music_for_emotion_english(
+                        target_emotion_en, segment_duration
+                    )
+                    
+                    if local_music_path and os.path.exists(local_music_path):
+                        # 使用本地音乐
+                        music_segment = AudioSegment.from_file(local_music_path)
+                        
+                        # 调整音乐长度
+                        target_length_ms = segment_duration * 1000
+                        if len(music_segment) > target_length_ms:
+                            music_segment = music_segment[:target_length_ms]
+                        elif len(music_segment) < target_length_ms:
+                            repeat_times = int(target_length_ms / len(music_segment)) + 1
+                            extended_segment = AudioSegment.empty()
+                            for _ in range(repeat_times):
+                                extended_segment += music_segment
+                            music_segment = extended_segment[:target_length_ms]
+                        
+                        # 导出音乐片段
+                        music_segment.export(file_path, format="wav")
+                        music_files.append(file_path)
+                        print(f"    ✓ 使用本地音乐: {os.path.basename(local_music_path)}")
+                        
+                    else:
+                        # 本地音乐不可用，创建调试音乐（简单的正弦波提示音）
+                        print(f"    ⚠️ 本地音乐不可用，创建提示音")
+                        
+                        # 创建不同频率的提示音来区分情绪
+                        emotion_frequencies = {
+                            "Sad": 200,      # 低频，悲伤
+                            "Anxiety": 300,  # 中低频，焦虑
+                            "Hostility": 400, # 中频，敌意
+                            "Quiet": 220,    # 低频，安静
+                            "Love": 350,     # 中频，友爱
+                            "Happy": 500,    # 高频，快乐
+                            "Pride": 450     # 中高频，自豪
+                        }
+                        
+                        freq = emotion_frequencies.get(target_emotion_en, 250)
+                        tone = AudioSegment.sine(freq, duration=segment_duration * 1000, volume=0.1)
+                        tone.export(file_path, format="wav")
+                        music_files.append(file_path)
+                        
+                except Exception as e:
+                    self.logger.warning(f"情绪音乐生成失败，片段 {i}: {e}")
+                    print(f"    ⚠️ 生成失败，使用静音")
+                    
+                    # 创建静音作为回退
+                    silence = AudioSegment.silent(duration=segment_duration * 1000)
+                    silence.export(file_path, format="wav")
+                    music_files.append(file_path)
+            else:
+                # 超出计划范围，使用静音
+                silence = AudioSegment.silent(duration=20 * 1000)  # 20秒静音
+                silence.export(file_path, format="wav")
+                music_files.append(file_path)
+        
+        print(f"🎭 情绪转换音乐生成完成，共 {len(music_files)} 个片段")
+        return music_files
     
     def _generate_local_music(self, music_prompts: List[Dict]) -> List[str]:
         """
@@ -650,11 +904,20 @@ class MeditationApp:
             # 1. 生成 prompts
             prompts_data = self.generate_prompts(user_input, duration_minutes)
             
-            # 显示安慰语
+            # 显示安慰语或分析结果
+            if "analysis" in prompts_data:
+                print(f"\n🧠 情绪分析: {prompts_data['analysis']}\n")
+                session_info["analysis"] = prompts_data["analysis"]
+            
             comfort = prompts_data.get("comfort", "")
             if comfort:
                 print(f"\n🤗 安慰语: {comfort}\n")
                 session_info["comfort"] = comfort
+            
+            # 显示情绪转换计划
+            if "emotion_journey" in prompts_data:
+                print(f"🎭 情绪转换计划: {prompts_data['emotion_journey']}")
+                session_info["emotion_journey"] = prompts_data["emotion_journey"]
             
             # 2. 并行生成语音和音乐
             speech_task = asyncio.create_task(
@@ -662,7 +925,9 @@ class MeditationApp:
             )
             
             # 音乐生成在主线程中进行（因为涉及GPU操作）
-            music_files = self.generate_music(prompts_data["music_prompts"])
+            # 传递情绪转换计划到音乐生成
+            emotion_journey = prompts_data.get('emotion_journey_plan', [])
+            music_files = self.generate_music(prompts_data["music_prompts"], emotion_journey)
             
             # 等待语音生成完成
             speech_files = await speech_task

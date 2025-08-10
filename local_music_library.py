@@ -41,34 +41,76 @@ class LocalMusicLibrary:
             '友爱': 'Love'
         }
         
-        # 用户情绪到音乐情绪的映射
+        # 用户情绪到音乐情绪的映射（直接映射到目标情绪）
         self.emotion_mapping = {
-            '压力': '平静',
-            '焦虑': '平静',
-            '紧张': '平静',
-            '不安': '平静',
-            '悲伤': '友爱',
-            '低落': '喜悦', 
-            '沮丧': '友爱',
-            '忧郁': '平静',
-            '愤怒': '平静',
-            '生气': '平静',
-            '挫折': '友爱',
-            '敌意': '平静',
-            '孤独': '友爱',
-            '困扰': '友爱',
-            '烦恼': '平静',
-            '失眠': '平静',
+            # 焦虑相关词汇
+            '压力': '焦虑',
+            '焦虑': '焦虑',
+            '紧张': '焦虑',
+            '不安': '焦虑',
+            '担心': '焦虑',
+            '害怕': '焦虑',
+            '恐惧': '焦虑',
+            '慌张': '焦虑',
+            '失眠': '焦虑',
+            # 忧郁相关词汇
+            '悲伤': '忧郁',
+            '低落': '忧郁', 
+            '沮丧': '忧郁',
+            '忧郁': '忧郁',
+            '抑郁': '忧郁',
+            '难过': '忧郁',
+            '痛苦': '忧郁',
+            '绝望': '忧郁',
+            '失恋': '忧郁',
+            '孤独': '忧郁',
+            '空虚': '忧郁',
+            '意义': '忧郁',  # "没有意义"等表达
+            # 敌意相关词汇
+            '愤怒': '敌意',
+            '生气': '敌意',
+            '愤慨': '敌意',
+            '恼火': '敌意',
+            '暴躁': '敌意',
+            '气愤': '敌意',
+            '争吵': '敌意',
+            '冲突': '敌意',
+            '仇恨': '敌意',
+            '发泄': '敌意',
+            '敌意': '敌意',
+            # 平静相关词汇
+            '平静': '平静',
+            '安静': '平静',
+            '宁静': '平静',
+            '放松': '平静',
+            '休息': '平静',
             '疲惫': '平静',
+            # 自豪相关词汇
             '成功': '自豪',
             '成就': '自豪',
             '目标': '自豪',
+            '骄傲': '自豪',
+            '完成': '自豪',
+            '胜利': '自豪',
+            '项目': '自豪',  # "完成项目"等
+            # 喜悦相关词汇
             '开心': '喜悦',
             '快乐': '喜悦',
             '兴奋': '喜悦',
+            '愉快': '喜悦',
+            '高兴': '喜悦',
+            '满足': '喜悦',
+            '不错': '喜悦',
+            # 友爱相关词汇
             '温暖': '友爱',
             '关爱': '友爱',
-            '感恩': '友爱'
+            '感恩': '友爱',
+            '爱意': '友爱',
+            '慈爱': '友爱',
+            '亲情': '友爱',
+            '友情': '友爱',
+            '挫折': '友爱',
+            '困扰': '友爱'
         }
         
         print(f"📁 本地音乐库路径: {self.library_path}")
@@ -171,6 +213,44 @@ class LocalMusicLibrary:
         """
         target_emotion = self.analyze_user_emotion(user_input)
         return self.get_music_for_emotion(target_emotion, duration_seconds)
+    
+    def get_music_for_emotion_english(self, emotion_en: str, duration_seconds: int) -> Optional[str]:
+        """
+        根据英文情绪名称获取合适的背景音乐
+        
+        Args:
+            emotion_en: 英文情绪名称 (如 'Anxiety', 'Happy', 'Quiet' 等)
+            duration_seconds: 需要的音乐时长（秒）
+            
+        Returns:
+            Optional[str]: 选中的音乐文件路径，如果没有则返回None
+        """
+        # 英文情绪到中文情绪的反向映射
+        en_to_cn_mapping = {
+            'Hostility': '敌意',
+            'Sad': '忧郁',
+            'Anxiety': '焦虑', 
+            'Quiet': '平静',
+            'Happy': '喜悦',
+            'Pride': '自豪',
+            'Love': '友爱'
+        }
+        
+        # 转换为中文情绪
+        emotion_cn = en_to_cn_mapping.get(emotion_en, '平静')
+        
+        # 扫描音乐库
+        library_info = self.scan_library()
+        
+        if emotion_cn not in library_info or not library_info[emotion_cn]:
+            print(f"⚠️ 英文情绪 '{emotion_en}' (中文: {emotion_cn}) 没有可用的本地音乐")
+            return None
+        
+        music_files = library_info[emotion_cn]
+        selected_file = random.choice(music_files)
+        
+        print(f"🎵 选择本地音乐: {Path(selected_file).name} (英文情绪: {emotion_en} -> 中文: {emotion_cn})")
+        return selected_file
     
     def get_library_status(self) -> Dict[str, int]:
         """

@@ -100,12 +100,19 @@ setup_d_drive_cache()
 
 def print_welcome():
     """打印欢迎信息"""
-    print("🧘‍♀️ 欢迎使用 AI 冥想助手 (Python 3.13 兼容版)")
+    print("🧘‍♀️ 欢迎使用 AI 冥想助手 (情绪转换版)")
     print("=" * 60)
     print("本应用能够根据您的倾诉内容生成个性化的冥想会话")
-    print("包含温柔的指导语音和舒缓的背景音乐")
+    print("🎭 核心功能：情绪转换引导 (消极→中性→积极)")
+    print("🎵 智能音乐选择：优先使用本地音乐库，音乐与情绪同步")
+    print("🗣️ 个性化引导语：温和的指导语音帮助您跟随音乐进行情绪转换")
     print("✨ 使用 librosa + soundfile 音频处理，完全兼容 Python 3.13")
     print("💾 优化版：所有文件和缓存保存在D盘，保护C盘空间")
+    print()
+    print("🎯 情绪转换路径示例：")
+    print("   焦虑 → 平静 → 喜悦")
+    print("   忧郁 → 平静 → 友爱") 
+    print("   敌意 → 平静 → 友爱")
     print()
 
 
@@ -158,32 +165,45 @@ def check_c_drive_protection():
 def get_user_input():
     """获取用户输入"""
     preset_inputs = [
-        "我最近总是失眠，而且觉得压力很大，什么都做不好。",
-        "工作上遇到了很多挫折，感觉很焦虑，需要放松一下。",
-        "最近心情很低落，希望能找到内心的平静。",
-        "感觉生活节奏太快，想要慢下来好好休息。",
-        "人际关系让我感到困扰，需要调整心态。",
-        "最近总是感到孤独，希望能找到内心的力量。"
+        "我最近工作压力特别大，总是失眠，心里很焦虑，担心做不好。",
+        "失恋了，心情很低落，觉得生活没有意义，很悲伤。",
+        "和同事发生了激烈争吵，现在很生气，想要发泄这种愤怒。",
+        "今天心情不错，但想要更加平静安宁，享受内心的宁静。",
+        "刚完成了重要项目，很有成就感，想要保持这种积极状态。",
+        "感受到朋友们的关爱，心里很温暖，希望延续这种美好感受。"
     ]
     
-    print("请选择您的情况，或者输入自定义内容：")
-    for i, text in enumerate(preset_inputs, 1):
-        print(f"{i}. {text}")
-    print(f"{len(preset_inputs) + 1}. 自定义输入")
+    print("💭 请描述您当前的情绪状态（越详细越好，有助于AI准确分析）：")
+    print("   情绪转换系统将根据您的描述制定个性化的转换路径")
+    print()
+    print("📋 您可以选择以下示例，或者输入自定义内容：")
+    
+    emotions = ["焦虑压力", "悲伤低落", "愤怒敌意", "平静状态", "自豪成就", "温暖关爱"]
+    for i, (text, emotion) in enumerate(zip(preset_inputs, emotions), 1):
+        print(f"{i}. [{emotion}] {text}")
+    print(f"{len(preset_inputs) + 1}. 💬 自定义输入")
     
     while True:
         try:
             choice = input(f"\n请输入选择 (1-{len(preset_inputs) + 1}): ").strip()
             
             if choice == str(len(preset_inputs) + 1):
-                user_input = input("\n请描述您当前的心情或困扰: ").strip()
+                print("\n💡 提示：请尽量详细描述您的情绪，例如：")
+                print("   - 具体的情况或事件")
+                print("   - 当前的感受和情绪强度")
+                print("   - 希望达到的情绪状态")
+                user_input = input("\n📝 请描述您当前的心情或困扰: ").strip()
                 if not user_input:
                     print("❌ 输入为空，使用默认示例")
                     return preset_inputs[0]
+                if len(user_input) < 10:
+                    print("💡 建议描述更详细一些，有助于情绪分析的准确性")
                 return user_input
             
             elif choice.isdigit() and 1 <= int(choice) <= len(preset_inputs):
-                return preset_inputs[int(choice) - 1]
+                selected = preset_inputs[int(choice) - 1]
+                print(f"✅ 您选择了: {selected}")
+                return selected
             
             else:
                 print(f"请输入有效的选择 (1-{len(preset_inputs) + 1})")
@@ -248,6 +268,18 @@ def print_system_info(app: MeditationApp):
             print(f"      {var}: ✅ D盘")
         else:
             print(f"      {var}: ⚠️ {value}")
+    
+    # 显示情绪转换系统状态
+    print(f"   🎭 情绪转换系统:")
+    try:
+        music_status = app.local_music_lib.get_library_status()
+        total_music = sum(music_status.values())
+        print(f"      本地音乐库: ✅ {total_music}首音乐")
+        print(f"      情绪分类: {len(music_status)}种 ({', '.join(music_status.keys())})")
+        print(f"      转换路径: 消极→中性→积极")
+    except Exception as e:
+        print(f"      音乐库状态: ⚠️ 检查失败 ({e})")
+    
     print()
 
 
