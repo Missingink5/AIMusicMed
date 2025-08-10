@@ -14,7 +14,7 @@ from dataclasses import dataclass, asdict
 @dataclass
 class APIConfig:
     """API配置"""
-    deepseek_api_key: str = ""
+    deepseek_api_key: str = "sk-9ec64e20ae244fc8aa7fac849d49e5e2"
     deepseek_base_url: str = "https://api.deepseek.com/v1"
 
 

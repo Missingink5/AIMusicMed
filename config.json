@@ -1,6 +1,6 @@
 {
   "api_keys": {
-    "deepseek_api_key": "PUT_YOUR_KEY_OR_USE_ENV",
+    "deepseek_api_key": "sk-9ec64e20ae244fc8aa7fac849d49e5e2",
     "deepseek_base_url": "https://api.deepseek.com/v1"
   },
   "paths": {
