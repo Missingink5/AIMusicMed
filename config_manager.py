@@ -14,8 +14,38 @@ from dataclasses import dataclass, asdict
 @dataclass
 class APIConfig:
     """API配置"""
-    deepseek_api_key: str = "sk-9ec64e20ae244fc8aa7fac849d49e5e2"
+    deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
+    
+    def __post_init__(self):
+        """处理 API Key：若为占位符则尝试从环境变量读取"""
+        if self.deepseek_api_key in ("", "PUT_YOUR_KEY_OR_USE_ENV"):
+            env_key = os.getenv("DEEPSEEK_API_KEY")
+            if env_key:
+                self.deepseek_api_key = env_key
+                print(f"✅ 从环境变量读取 API Key: {env_key[:8]}***")
+            else:
+                print("⚠️ 未设置 DEEPSEEK_API_KEY 环境变量，请设置后重试")
+    
+    def __post_init__(self):
+        """处理 API Key：若为占位符则尝试从环境变量读取"""
+        if self.deepseek_api_key in ("", "PUT_YOUR_KEY_OR_USE_ENV"):
+            env_key = os.getenv("DEEPSEEK_API_KEY")
+            if env_key:
+                self.deepseek_api_key = env_key
+                print(f"✅ 从环境变量读取 API Key: {env_key[:8]}***")
+            else:
+                print("⚠️ 未设置 DEEPSEEK_API_KEY 环境变量，请设置后重试")
+    
+    def __post_init__(self):
+        """处理 API Key：若为空/占位符则尝试从环境变量读取"""
+        if self.deepseek_api_key in ("", "PUT_YOUR_KEY_OR_USE_ENV") or self.deepseek_api_key.startswith("sk-9ec64e20"):
+            env_key = os.getenv("DEEPSEEK_API_KEY")
+            if env_key:
+                self.deepseek_api_key = env_key
+                print(f"✅ 从环境变量读取 API Key: {env_key[:8]}***")
+            else:
+                print("⚠️ 未设置 DEEPSEEK_API_KEY 环境变量，请设置后重试")
 
 
 @dataclass
