@@ -12,10 +12,23 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import asdict
 import time
 
-from openai import OpenAI
-from transformers import MusicgenForConditionalGeneration, AutoProcessor
-import torch
-import edge_tts
+try:
+    from openai import OpenAI
+except ImportError as e:  # 更友好的缺失依赖提示
+    raise ImportError("缺少依赖 openai，请先在虚拟环境中执行: pip install -r requirements.txt 或 pip install openai") from e
+
+try:
+    from transformers import MusicgenForConditionalGeneration, AutoProcessor
+except ImportError as e:
+    raise ImportError("缺少依赖 transformers，请执行: pip install -r requirements.txt") from e
+try:
+    import torch
+except ImportError as e:
+    raise ImportError("缺少依赖 torch，请先安装 GPU/CPU 版 PyTorch") from e
+try:
+    import edge_tts
+except ImportError as e:
+    raise ImportError("缺少依赖 edge-tts，请执行: pip install edge-tts") from e
 
 # 导入兼容的音频处理模块
 from audio_compat import AudioSegment
