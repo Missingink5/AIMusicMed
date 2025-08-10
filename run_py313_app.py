@@ -12,15 +12,14 @@ from pathlib import Path
 # 添加当前目录到Python路径
 sys.path.append(str(Path(__file__).parent))
 
-# 强制设置所有AI缓存到D盘，避免占用C盘
 def setup_d_drive_cache():
-    """强制设置所有缓存到D盘"""
-    cache_base = "D:/MyMeditationApp/cache"
-    
-    # 确保缓存目录存在
+    """跨平台缓存设置: Windows 使用 D 盘; 其他平台使用 ~/meditation_app/cache 或环境变量 HF_CACHE_BASE"""
+    if os.name == 'nt':
+        cache_base = "D:/MyMeditationApp/cache"
+    else:
+        cache_base = os.environ.get('HF_CACHE_BASE') or os.path.expanduser('~/meditation_app/cache')
+
     Path(cache_base).mkdir(parents=True, exist_ok=True)
-    
-    # 设置所有AI相关的环境变量
     cache_vars = {
         "HF_HOME": cache_base,
         "TRANSFORMERS_CACHE": f"{cache_base}/transformers",
@@ -31,19 +30,16 @@ def setup_d_drive_cache():
         "TORCH_CACHE_DIR": f"{cache_base}/torch",
         "FLAIR_CACHE_ROOT": f"{cache_base}/flair"
     }
-    
     for var, path in cache_vars.items():
         os.environ[var] = path
         Path(path).mkdir(parents=True, exist_ok=True)
-    
-    print(f"✅ 所有AI缓存已重定向到D盘: {cache_base}")
+    print(f"✅ 缓存已重定向: {cache_base}")
 
 
 def force_cleanup_c_drive_cache():
-    """强制清理C盘缓存"""
+    if os.name != 'nt':
+        return  # 非 Windows 无需执行 C 盘清理逻辑
     print("🧹 强制清理C盘AI缓存...")
-    
-    # 可能的C盘缓存位置
     c_cache_paths = [
         Path.home() / ".cache" / "huggingface",
         Path.home() / ".cache" / "transformers",
@@ -51,20 +47,18 @@ def force_cleanup_c_drive_cache():
         Path(os.environ.get("APPDATA", "")) / "torch" if os.environ.get("APPDATA") else None,
         Path(os.environ.get("LOCALAPPDATA", "")) / "torch" if os.environ.get("LOCALAPPDATA") else None,
     ]
-    
     total_cleaned = 0
     for cache_path in c_cache_paths:
         if cache_path and cache_path.exists():
             try:
                 import shutil
                 size = sum(f.stat().st_size for f in cache_path.rglob('*') if f.is_file()) / (1024*1024)
-                if size > 10:  # 大于10MB就清理
+                if size > 10:
                     print(f"   🗑️ 清理 {cache_path} ({size:.1f}MB)")
                     shutil.rmtree(cache_path)
                     total_cleaned += size
             except Exception as e:
                 print(f"   ⚠️ 清理 {cache_path} 失败: {e}")
-    
     if total_cleaned > 0:
         print(f"   ✅ 共清理 {total_cleaned:.1f}MB C盘缓存")
     else:
@@ -116,13 +110,18 @@ def print_welcome():
 
 
 def check_c_drive_protection():
-    """检查C盘保护状态"""
+    if os.name != 'nt':
+        # 简化: 显示当前缓存指向
+        print("🛡️ 缓存路径检查:")
+        cache_vars = ["HF_HOME", "TRANSFORMERS_CACHE", "TORCH_HOME", "HUGGINGFACE_HUB_CACHE"]
+        for var in cache_vars:
+            value = os.environ.get(var, '未设置')
+            print(f"   {var}: {value}")
+        print()
+        return
     print("🛡️ C盘保护检查:")
-    
-    # 检查环境变量
     protected_vars = 0
     total_vars = 0
-    
     cache_vars = ["HF_HOME", "TRANSFORMERS_CACHE", "TORCH_HOME", "HUGGINGFACE_HUB_CACHE"]
     for var in cache_vars:
         total_vars += 1
@@ -132,32 +131,27 @@ def check_c_drive_protection():
             print(f"   ✅ {var}: 已重定向到D盘")
         else:
             print(f"   ⚠️ {var}: {value or '未设置'}")
-    
-    # 检查是否有C盘缓存
     c_cache_found = False
     c_cache_paths = [
         Path.home() / ".cache" / "huggingface",
         Path.home() / ".cache" / "transformers",
         Path("C:/Users") / os.getlogin() / ".cache" / "huggingface" if os.getlogin() else None
     ]
-    
     for cache_path in c_cache_paths:
         if cache_path and cache_path.exists():
             try:
                 size = sum(f.stat().st_size for f in cache_path.rglob('*') if f.is_file()) / (1024*1024)
-                if size > 10:  # 大于10MB
+                if size > 10:
                     c_cache_found = True
                     print(f"   ⚠️ 发现C盘缓存: {cache_path} ({size:.1f}MB)")
             except:
                 pass
-    
     if protected_vars == total_vars and not c_cache_found:
         print("   🎉 C盘完全受保护，无AI缓存占用")
     elif protected_vars > 0:
         print(f"   🔄 部分保护已启用 ({protected_vars}/{total_vars})")
     else:
         print("   ❌ C盘保护未启用，建议运行清理工具")
-    
     print()
 
 

@@ -5,6 +5,7 @@ Configuration Manager
 """
 
 import os
+import platform
 import json
 from typing import Optional
 from dataclasses import dataclass, asdict
@@ -19,16 +20,53 @@ class APIConfig:
 
 @dataclass
 class PathConfig:
-    """路径配置"""
-    base_dir: str = "D:/MyMeditationApp"
+    """路径配置 (自动根据操作系统选择合适的默认目录)
+    优先级:
+      1. 显式传入的 base_dir
+      2. 环境变量 MEDITATION_BASE_DIR
+      3. Windows: D:/MyMeditationApp  (保留原语义)
+         Linux / macOS: ~/meditation_app
+    """
+    base_dir: str = ""  # 留空以触发自动解析
     cache_dir: Optional[str] = None
     temp_dir: Optional[str] = None
-    
+
+    def _resolve_base(self) -> str:
+        if self.base_dir:
+            return self.base_dir
+        env_dir = os.getenv("MEDITATION_BASE_DIR")
+        if env_dir:
+            return env_dir
+        if os.name == 'nt':
+            return "D:/MyMeditationApp"
+        # 非 Windows
+        return os.path.expanduser("~/meditation_app")
+
     def __post_init__(self):
+        # 解析并标准化 base_dir
+        self.base_dir = os.path.abspath(self._resolve_base()) if not (os.name == 'nt' and self._resolve_base().startswith(('D:', 'd:'))) else self._resolve_base()
         if self.cache_dir is None:
             self.cache_dir = os.path.join(self.base_dir, "cache")
         if self.temp_dir is None:
             self.temp_dir = os.path.join(self.base_dir, "temp")
+
+    def ensure_writable(self):
+        """确保目录可写; 若不可写则回退到用户主目录."""
+        test_dir = self.base_dir
+        try:
+            os.makedirs(test_dir, exist_ok=True)
+            test_file = os.path.join(test_dir, '.writetest')
+            with open(test_file, 'w') as f:
+                f.write('ok')
+            os.remove(test_file)
+        except Exception:
+            # 回退
+            fallback = os.path.expanduser('~/meditation_app')
+            print(f"⚠️ 基础目录 {self.base_dir} 不可写, 回退到 {fallback}")
+            self.base_dir = fallback
+            self.cache_dir = os.path.join(self.base_dir, 'cache')
+            self.temp_dir = os.path.join(self.base_dir, 'temp')
+            os.makedirs(self.base_dir, exist_ok=True)
 
 
 @dataclass
@@ -71,9 +109,15 @@ class AppConfig:
             self.paths.temp_dir
         ]
         
+        # 若当前 base_dir 不可写则回退
+        self.paths.ensure_writable()
         for directory in directories:
-            if directory and not os.path.exists(directory):
-                os.makedirs(directory, exist_ok=True)
+            try:
+                if directory and not os.path.exists(directory):
+                    os.makedirs(directory, exist_ok=True)
+            except PermissionError:
+                print(f"❌ 无法创建目录: {directory} (权限不足)")
+                raise
     
     @classmethod
     def from_json(cls, config_path: str) -> 'AppConfig':
