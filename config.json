@@ -10,12 +10,13 @@
   },
   "audio_settings": {
     "music_model": "facebook/musicgen-small",
-    "tts_voice": "zh-CN-XiaoyiNeural",
-    "speech_rate": "-25%",
-    "speech_pitch": "-8Hz",
-    "music_volume_reduction": 4,
+    "tts_voice": "zh-CN-XiaoxiaoNeural",
+    "speech_rate": "-45%",
+    "speech_pitch": "-10Hz",
+    "speech_volume": "0.8",
+    "music_volume_reduction": 8,
     "output_bitrate": "128k",
-    "enable_smart_voice_selection": true,
+    "enable_smart_voice_selection": false,
     "enable_ai_music": true,
     "use_high_quality_music": true,
     "music_quality_preference": "balanced"

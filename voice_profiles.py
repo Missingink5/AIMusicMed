@@ -16,17 +16,35 @@ VOICE_PROFILES = {
         "style": "温柔甜美",
         "description": "年轻女性，声音甜美温柔，适合放松和冥想",
         "emotions": ["calm", "happy", "gentle", "peaceful"],
-        "default_rate": "-20%",
-        "default_pitch": "-5Hz"
+        "default_rate": "-40%",
+        "default_pitch": "-10Hz"
     },
     "zh-CN-XiaoyiNeural": {
         "name": "晓伊", 
         "gender": "female",
         "style": "温柔自然",
-        "description": "最温柔自然的女声，特别适合冥想和放松场景",
+        "description": "温柔自然的女声，特别适合冥想和放松场景",
         "emotions": ["stressed", "anxious", "sad", "tired"],
         "default_rate": "-25%",
         "default_pitch": "-8Hz"
+    },
+    "zh-CN-XiaochenNeural": {
+        "name": "晓辰",
+        "gender": "female",
+        "style": "成熟温暖",
+        "description": "成熟女性，声音温暖治愈，适合深度情感疗愈",
+        "emotions": ["sad", "healing", "deep", "motherly"],
+        "default_rate": "-35%",
+        "default_pitch": "-12Hz"
+    },
+    "zh-CN-XiaomoNeural": {
+        "name": "晓墨",
+        "gender": "female", 
+        "style": "知性优雅",
+        "description": "知性女声，声音优雅沉静，适合正念冥想",
+        "emotions": ["focused", "mindful", "elegant"],
+        "default_rate": "-28%",
+        "default_pitch": "-6Hz"
     },
     "zh-CN-YunxiNeural": {
         "name": "云希",
@@ -34,8 +52,8 @@ VOICE_PROFILES = {
         "style": "沉稳温和",
         "description": "年轻男性，声音沉稳温和，适合深度冥想",
         "emotions": ["neutral", "focused", "deep"],
-        "default_rate": "-15%",
-        "default_pitch": "-3Hz"
+        "default_rate": "-20%",
+        "default_pitch": "-5Hz"
     },
     "zh-CN-YunyangNeural": {
         "name": "云扬",
@@ -43,8 +61,17 @@ VOICE_PROFILES = {
         "style": "成熟稳重", 
         "description": "成熟男性，声音稳重有力，适合引导式冥想",
         "emotions": ["confident", "guided", "structured"],
-        "default_rate": "-10%",
-        "default_pitch": "0Hz"
+        "default_rate": "-15%",
+        "default_pitch": "-3Hz"
+    },
+    "zh-CN-YunxiaNeural": {
+        "name": "云夏",
+        "gender": "male",
+        "style": "温润如玉",
+        "description": "温润男声，声音如春风化雨，适合治愈系冥想",
+        "emotions": ["healing", "gentle", "warm"],
+        "default_rate": "-25%",
+        "default_pitch": "-8Hz"
     }
 }
 
@@ -102,22 +129,22 @@ def get_voice_by_emotion(user_input: str) -> Dict[str, str]:
     
     # 为不同情绪选择最适合的语音
     emotion_voice_mapping = {
-        "stressed": "zh-CN-XiaoyiNeural",    # 温柔自然，适合压力缓解
-        "anxious": "zh-CN-XiaoyiNeural",     # 温柔自然，适合焦虑缓解  
-        "sad": "zh-CN-XiaoyiNeural",         # 温柔自然，适合安慰
+        "stressed": "zh-CN-XiaoxiaoNeural",  # 甜美温柔，适合压力缓解  
+        "anxious": "zh-CN-XiaoxiaoNeural",   # 甜美温柔，适合焦虑缓解
+        "sad": "zh-CN-XiaoxiaoNeural",       # 甜美温柔，适合安慰
         "tired": "zh-CN-XiaoxiaoNeural",     # 甜美温柔，适合放松
-        "angry": "zh-CN-XiaoyiNeural",       # 温柔自然，适合平复情绪
+        "angry": "zh-CN-XiaoxiaoNeural",     # 甜美温柔，适合平复情绪
         "happy": "zh-CN-XiaoxiaoNeural",     # 甜美温柔，保持愉悦
         "calm": "zh-CN-XiaoxiaoNeural",      # 甜美温柔，保持平静
-        "neutral": "zh-CN-YunxiNeural",      # 沉稳温和，适合一般冥想
-        "confident": "zh-CN-YunyangNeural",  # 成熟稳重，适合自信建立
-        "focused": "zh-CN-YunxiNeural",      # 沉稳温和，适合专注训练
-        "deep": "zh-CN-YunxiNeural",         # 沉稳温和，适合深度冥想
-        "guided": "zh-CN-YunyangNeural"      # 成熟稳重，适合引导冥想
+        "neutral": "zh-CN-XiaoxiaoNeural",   # 甜美温柔，适合一般冥想
+        "confident": "zh-CN-XiaoxiaoNeural", # 甜美温柔，适合自信建立
+        "focused": "zh-CN-XiaoxiaoNeural",   # 甜美温柔，适合专注训练
+        "deep": "zh-CN-XiaoxiaoNeural",      # 甜美温柔，适合深度冥想
+        "guided": "zh-CN-XiaoxiaoNeural"     # 甜美温柔，适合引导冥想
     }
     
     # 选择语音
-    selected_voice = emotion_voice_mapping.get(detected_emotion, "zh-CN-XiaoyiNeural")
+    selected_voice = emotion_voice_mapping.get(detected_emotion, "zh-CN-XiaoxiaoNeural")
     voice_profile = VOICE_PROFILES[selected_voice]
     
     return {

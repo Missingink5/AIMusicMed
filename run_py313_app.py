@@ -217,17 +217,17 @@ def get_duration():
     """获取冥想时长"""
     while True:
         try:
-            duration_input = input("请输入冥想时长 (分钟，1-10，默认3分钟): ").strip()
+            duration_input = input("请输入冥想时长 (分钟，3-20，默认5分钟): ").strip()
             
             if not duration_input:
-                return 3
+                return 5
             
             duration = int(duration_input)
-            if 1 <= duration <= 10:
+            if 3 <= duration <= 20:
                 return duration
             else:
-                print("请输入1-10之间的数字")
-                
+                print("请输入3-20之间的数字")
+
         except ValueError:
             print("请输入有效的数字")
         except KeyboardInterrupt:

@@ -114,14 +114,19 @@ class AudioConfig:
     """音频配置"""
     music_model: str = "facebook/musicgen-small"
     tts_voice: str = "zh-CN-XiaoxiaoNeural"
-    speech_rate: str = "-20%"
-    speech_pitch: str = "-5Hz"
+    speech_rate: str = "-35%"
+    speech_pitch: str = "+2Hz"
+    speech_volume: str = "0.9"
+    speech_style: str = "meditation"
+    speech_emphasis: str = "natural"
+    speech_prosody: str = "expressive"
+    speech_pause_length: str = "medium"
     music_volume_reduction: int = 8
     output_bitrate: str = "128k"
     enable_smart_voice_selection: bool = False
     enable_ai_music: bool = True
-    use_high_quality_music: bool = False
-    music_quality_preference: str = "high"
+    use_high_quality_music: bool = True
+    music_quality_preference: str = "balanced"
 
 
 @dataclass

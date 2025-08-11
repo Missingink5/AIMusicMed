@@ -165,12 +165,54 @@ async def demo():
 asyncio.run(demo())
 ```
 
-## 8. 授权
-本仓库当前只保留运行代码，无额外协议文件，默认视为个人项目；如需开源请自行补充 LICENSE。
+## 8. 项目清理说明
 
----
-如需：
-1) 删除 `repo_prune.py`；
-2) 添加 LICENSE；
-3) 加入一个简单的单元测试；
-回复对应数字即可。
+本项目已完成彻底清理，移除了所有测试文件、临时文件和不必要的文档：
+
+### 已删除的文件类型：
+- **测试文件**: 所有 `test_*.py` 和 `*_test.py` 文件
+- **音频样本**: 所有测试生成的 `.wav` 文件
+- **开发工具**: 配置检查、语音测试、部署脚本等
+- **临时文档**: 各种报告和指南的 markdown 文件
+- **部署脚本**: 除核心的 `deploy.sh` 外的所有部署工具
+
+### 保留的核心文件：
+```
+PythonProject/
+├── py313_meditation_app.py      # 主应用程序
+├── run_py313_app.py            # 启动脚本  
+├── config.json                 # 配置文件
+├── config.json.example         # 配置模板
+├── config_manager.py           # 配置管理
+├── audio_compat.py            # 音频兼容层
+├── voice_profiles.py          # 语音配置
+├── local_music_library.py     # 音乐库管理
+├── high_quality_music_manager_clean.py  # 音乐管理器
+├── music_library/             # 音乐资源库（61首音乐）
+├── requirements.txt           # 依赖包列表
+├── README.md                 # 项目说明
+├── .gitignore               # Git忽略文件
+├── Dockerfile               # Docker配置
+├── docker-compose.yml       # Docker编排
+└── deploy.sh               # 部署脚本
+```
+
+清理统计：删除了135个文件和5个目录，项目结构更加简洁明了。
+
+## 9. 语音停顿优化
+
+本项目已优化语音自然度，实现了智能语音停顿：
+
+### 停顿系统：
+- **句子停顿**: 每句话结束后停顿3秒（用"......"表示）
+- **短语停顿**: 逗号处停顿2秒（用"...."表示）
+- **语速设置**: -50%慢速，确保舒缓节奏
+- **音调调整**: -10Hz，声音更加温和
+
+### 语音配置：
+- **主声音**: zh-CN-XiaoxiaoNeural（晓晓）
+- **停顿机制**: 点号标记自动停顿，避免SSML标签被朗读
+- **自然效果**: 纯文本+点号实现自然停顿
+
+## 10. 授权
+本仓库为个人冥想项目，代码简洁实用。如需开源请自行补充 LICENSE。

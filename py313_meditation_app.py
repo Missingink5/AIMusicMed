@@ -10,6 +10,7 @@ import asyncio
 import logging
 import requests
 import time
+import subprocess
 from typing import List, Dict, Optional, Tuple
 from dataclasses import asdict
 
@@ -255,7 +256,7 @@ class MeditationApp:
             # 构建情绪转换指导的系统提示词
             journey_description = " → ".join([stage['emotion_cn'] for stage in emotion_journey])
             
-            system_prompt = f"""你是一位专业的情绪转换冥想指导师，专精于引导用户通过音乐和冥想实现情绪的健康转换。
+            system_prompt = f"""你是一位专业的情绪转换冥想指导师和情绪聚焦疗法的专家，专精于引导用户通过音乐和冥想实现情绪的健康转换。
 
 情绪转换计划：{journey_description}
 总时长：{duration_minutes}分钟
@@ -319,25 +320,59 @@ class MeditationApp:
 - 在第二阶段温和地引导向平静过渡
 - 在第三阶段培养积极正面的情绪体验"""
             
-            # 调用DeepSeek API
+            # 调用DeepSeek API - 优化参数减少超时
             data = {
                 "model": "deepseek-chat",
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                "temperature": 0.7,
-                "max_tokens": 3000
+                "temperature": 0.6,  # 降低随机性，提高生成效率
+                "max_tokens": 2500,  # 适当减少最大token数
+                "top_p": 0.8,       # 添加top_p参数提高效率
+                "stream": False      # 确保不使用流式生成
             }
             
-            response = requests.post(url, headers=headers, json=data, timeout=30)
-            response.raise_for_status()
+            # 增加超时时间并添加重试机制
+            max_retries = 3
+            timeout_seconds = 90  # 增加到90秒
+            
+            for attempt in range(max_retries):
+                try:
+                    print(f"🔄 正在生成情绪转换提示词... (尝试 {attempt + 1}/{max_retries})")
+                    response = requests.post(url, headers=headers, json=data, timeout=timeout_seconds)
+                    response.raise_for_status()
+                    break  # 成功则跳出重试循环
+                except requests.exceptions.Timeout:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 10  # 递增等待时间: 10, 20, 30秒
+                        print(f"⚠️ 请求超时，{wait_time}秒后重试...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        raise requests.exceptions.Timeout("多次尝试后仍然超时，请检查网络连接或稍后再试")
+                except requests.exceptions.RequestException as e:
+                    if attempt < max_retries - 1:
+                        print(f"⚠️ 请求失败: {e}，10秒后重试...")
+                        time.sleep(10)
+                        continue
+                    else:
+                        raise
             
             response_data = response.json()
             content = response_data['choices'][0]['message']['content']
             
             # 解析JSON响应
             try:
+                # 清理响应内容，移除可能的markdown标记
+                content = content.strip()
+                if content.startswith('```json'):
+                    # 移除markdown代码块标记
+                    content = content[7:]  # 移除开头的```json
+                if content.endswith('```'):
+                    content = content[:-3]  # 移除结尾的```
+                content = content.strip()
+                
                 prompts_data = json.loads(content)
                 
                 # 验证响应格式
@@ -369,12 +404,288 @@ class MeditationApp:
         
         except requests.exceptions.RequestException as e:
             self.logger.error(f"API请求失败: {e}")
-            raise MeditationAppError(f"网络请求失败: {e}")
+            print(f"⚠️ API请求失败: {e}")
+            
+            # 降级机制：当API失败时使用本地预设模板
+            print("🔄 启用降级模式，使用本地情绪转换模板...")
+            return self._generate_fallback_prompts(user_input, current_emotion, emotion_journey, duration_minutes)
+            
         except Exception as e:
             self.logger.error(f"提示词生成失败: {e}")
-            raise MeditationAppError(f"提示词生成失败: {e}")
+            print(f"⚠️ 提示词生成失败: {e}")
+            # 同样使用降级机制
+            print("🔄 启用降级模式，使用本地情绪转换模板...")
+            return self._generate_fallback_prompts(user_input, current_emotion, emotion_journey, duration_minutes)
 
-    async def generate_speech(self, script_prompts: List[Dict], user_input: str = "") -> List[str]:
+    def _generate_fallback_prompts(self, user_input: str, current_emotion: str, emotion_journey: List[Dict], duration_minutes: int) -> Dict:
+        """当API失败时的降级方案：使用本地预设模板"""
+        print("📝 使用本地情绪转换模板生成引导语...")
+        
+        # 情绪转换模板库
+        emotion_templates = {
+            "焦虑": {
+                "analysis": f"识别到您正处于焦虑状态。我们将通过3个阶段的情绪转换，帮助您从焦虑走向内心平静，最终培养积极的心态。",
+                "stage1": ["认可您当前的焦虑感受，这是正常的情绪反应", "深呼吸，让我们一起接纳这种感受"],
+                "stage2": ["现在让我们慢慢放松，找到内心的平静", "感受呼吸的节奏，让平静自然流淌"],
+                "stage3": ["培养内心的宁静与喜悦", "感受这份来自内心深处的平和力量"]
+            },
+            "忧郁": {
+                "analysis": f"感受到您内心的忧郁情绪。我们将温柔地陪伴您走过这段低落期，逐步找回内心的光明与温暖。",
+                "stage1": ["理解您的忧郁是暂时的，允许自己感受这份情绪", "在这份低落中，我们寻找内心的支撑点"],
+                "stage2": ["慢慢地，让内心的平静开始显现", "感受那份超越忧郁的宁静力量"],
+                "stage3": ["点亮内心的希望之光", "感受生命中美好事物带来的温暖"]
+            },
+            "敌意": {
+                "analysis": f"察觉到您内心的愤怒或敌意情绪。我们将通过冥想帮助您化解这些强烈的情绪，找到内心的和谐。",
+                "stage1": ["承认您的愤怒情绪，这是您内心力量的一种表达", "在安全的空间中释放这些情绪"],
+                "stage2": ["让愤怒慢慢转化为内心的平静", "感受心灵深处的宁静与和谐"],
+                "stage3": ["培养对自己和他人的理解与慈爱", "感受内心的温暖与包容力量"]
+            },
+            "平静": {
+                "analysis": f"您已经处于相对平静的状态。我们将在这个基础上，进一步深化内心的宁静，并培养更多的积极情绪。",
+                "stage1": ["维持当前的平静状态，感受这份内在的和谐", "让这份平静在心中稳定下来"],
+                "stage2": ["在平静中连接更深层的内心智慧", "感受平静中蕴含的无限可能"],
+                "stage3": ["从平静中生发出喜悦与感恩", "让积极的能量充满整个身心"]
+            }
+        }
+        
+        # 获取对应的模板，如果没有则使用通用模板
+        template = emotion_templates.get(current_emotion, emotion_templates["平静"])
+        
+        # 生成6段引导语（每阶段2段）
+        script_prompts = [
+            template["stage1"][0], template["stage1"][1],
+            template["stage2"][0], template["stage2"][1], 
+            template["stage3"][0], template["stage3"][1]
+        ]
+        
+        # 生成音乐提示
+        music_prompts = [
+            f"第一阶段前半段：{emotion_journey[0]['emotion_cn']}情绪音乐，与用户当前状态共鸣",
+            f"第一阶段后半段：{emotion_journey[0]['emotion_cn']}音乐，开始舒缓",
+            f"第二阶段前半段：{emotion_journey[1]['emotion_cn']}音乐，引导向平静过渡",
+            f"第二阶段后半段：{emotion_journey[1]['emotion_cn']}音乐，深化平静感受",
+            f"第三阶段前半段：{emotion_journey[2]['emotion_cn']}音乐，培养积极情绪",
+            f"第三阶段后半段：{emotion_journey[2]['emotion_cn']}音乐，巩固积极状态"
+        ]
+        
+        # 构建完整的降级响应
+        fallback_data = {
+            'analysis': template["analysis"],
+            'emotion_journey': f"{emotion_journey[0]['emotion_cn']} → {emotion_journey[1]['emotion_cn']} → {emotion_journey[2]['emotion_cn']}",
+            'script_prompts': script_prompts,
+            'music_prompts': music_prompts,
+            'stage_timings': [
+                {"stage": 1, "duration": emotion_journey[0]['duration'], "emotion": emotion_journey[0]['emotion_cn']},
+                {"stage": 2, "duration": emotion_journey[1]['duration'], "emotion": emotion_journey[1]['emotion_cn']},
+                {"stage": 3, "duration": emotion_journey[2]['duration'], "emotion": emotion_journey[2]['emotion_cn']}
+            ],
+            'user_emotion': current_emotion,
+            'emotion_journey_plan': emotion_journey,
+            'total_duration': duration_minutes,
+            'timestamp': time.time(),
+            'fallback_mode': True  # 标记这是降级模式
+        }
+        
+        print("✅ 本地模板生成完成！")
+        print(f"🎭 情绪旅程: {fallback_data['emotion_journey']}")
+        print(f"📝 生成了 {len(script_prompts)} 段本地冥想引导")
+        
+        return fallback_data
+
+    async def generate_speech_adaptive(self, script_prompts: List, music_info: List[Dict], user_input: str = "") -> List[str]:
+        """根据音乐时长自适应生成语音文件"""
+        self.logger.info("开始自适应语音生成")
+        print("🔊 正在根据音乐时长生成自适应语音...")
+        
+        # 智能选择语音
+        if user_input:
+            voice_profile = get_voice_by_emotion(user_input)
+            voice_name = voice_profile['voice']
+            speech_rate = voice_profile['rate']
+            speech_pitch = voice_profile['pitch']
+            print(f"🎙️ 智能选择语音: {voice_profile['description']}")
+        else:
+            # 使用配置文件中的默认设置
+            voice_name = self.config.audio.tts_voice
+            speech_rate = self.config.audio.speech_rate
+            speech_pitch = self.config.audio.speech_pitch
+        
+        speech_files = []
+        
+        for i, (segment, music) in enumerate(zip(script_prompts, music_info)):
+            file_path = os.path.join(self.config.paths.temp_dir, f"speech_{i:02d}.wav")
+            
+            try:
+                # 处理不同的数据格式：字符串或字典
+                if isinstance(segment, str):
+                    text_content = segment
+                elif isinstance(segment, dict):
+                    text_content = segment.get('text', str(segment))
+                else:
+                    text_content = str(segment)
+                
+                # 根据音乐时长调整语音内容
+                music_duration = music['duration_seconds']
+                adjusted_text = self._adjust_text_for_duration(text_content, music_duration)
+                
+                # 添加句间停顿处理
+                paused_text = self._add_sentence_pauses(adjusted_text)
+                
+                # 直接使用普通文本生成语音
+                voice_command = f'edge-tts --voice "{voice_name}" --rate="{speech_rate}" --pitch="{speech_pitch}" --text "{paused_text}" --write-media "{file_path}"'
+                
+                process = subprocess.run(
+                    voice_command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if process.returncode == 0 and os.path.exists(file_path):
+                    speech_files.append(file_path)
+                    print(f"  ✓ 片段 {i+1} 语音生成完成 (音乐{music_duration:.1f}秒): {adjusted_text[:30]}...")
+                else:
+                    self.logger.error(f"语音生成失败，片段 {i}: {process.stderr}")
+                    # 创建空文件占位
+                    open(file_path, 'a').close()
+                    speech_files.append(file_path)
+                    print(f"  ⚠️ 片段 {i+1} 语音生成失败")
+                    
+            except Exception as e:
+                self.logger.error(f"语音生成异常，片段 {i}: {e}")
+                # 创建空文件占位
+                open(file_path, 'a').close()
+                speech_files.append(file_path)
+                print(f"  ⚠️ 片段 {i+1} 语音生成异常")
+        
+        self.logger.info(f"所有语音文件生成完成，共 {len(speech_files)} 个")
+        print(f"✅ 所有语音文件生成完成，共 {len(speech_files)} 个")
+        return speech_files
+
+    def _add_sentence_pauses(self, text: str) -> str:
+        """在句子间添加更长的停顿"""
+        import re
+        
+        # 为每个句子结尾添加更长的停顿标记
+        enhanced_text = text
+        
+        # 1. 在句号、问号、感叹号后添加长停顿 (更长)
+        enhanced_text = re.sub(r'([。！？])(?!\s*$)', r'\1......', enhanced_text)
+        
+        # 2. 在逗号、分号后添加中等停顿
+        enhanced_text = re.sub(r'([，；])(?!\s*$)', r'\1....', enhanced_text)
+        
+        # 3. 在省略号后确保有足够停顿
+        enhanced_text = re.sub(r'(…)(?!\s*\.)', r'\1....', enhanced_text)
+        
+        # 4. 避免过多的重复点号，但保持较长停顿
+        enhanced_text = re.sub(r'\.{7,}', '......', enhanced_text)
+        
+        return enhanced_text
+
+    async def _generate_speech_async(self, text: str, voice: str, rate: str, pitch: str, output_path: str):
+        """使用edge-tts异步API生成语音（支持SSML）"""
+        # 如果是SSML文本，直接使用；否则包装成SSML
+        if not text.strip().startswith('<speak'):
+            text = f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="zh-CN">{text}</speak>'
+        
+        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
+        await communicate.save(output_path)
+
+    def _apply_ssml_enhancements(self, text: str) -> str:
+        """应用简化的SSML标签改善语音自然度"""
+        # 移除现有的SSML标签以避免冲突
+        import re
+        text = re.sub(r'<[^>]+>', '', text)
+        
+        # 简化的SSML增强，仅使用最基本的停顿标签
+        enhanced_text = text
+        
+        # 1. 在句号、省略号后添加长停顿
+        enhanced_text = re.sub(r'([。…]+)', r'\1<break time="1.5s"/>', enhanced_text)
+        
+        # 2. 在逗号、顿号后添加中等停顿
+        enhanced_text = re.sub(r'([，、]+)', r'\1<break time="0.4s"/>', enhanced_text)
+        
+        # 3. 在问号、感叹号后添加停顿
+        enhanced_text = re.sub(r'([？！]+)', r'\1<break time="0.6s"/>', enhanced_text)
+        
+        # 4. 为数字添加停顿（如"深呼吸4秒"）
+        enhanced_text = re.sub(r'(\d+)([秒分])', r'\1<break time="0.2s"/>\2', enhanced_text)
+        
+        # 5. 包装在简化的SSML根标签中
+        ssml_text = f'<speak>{enhanced_text}</speak>'
+        
+        return ssml_text
+    
+    def _adjust_text_for_duration(self, text: str, target_duration: float) -> str:
+        """根据目标时长调整文本内容"""
+        # 估算语音时长：中文大约每秒3-4个字符，取每秒3.5个字符
+        estimated_chars_per_second = 3.5
+        target_chars = int(target_duration * estimated_chars_per_second)
+        
+        original_length = len(text)
+        
+        if original_length <= target_chars:
+            # 文本太短，需要扩展
+            if target_duration > 30:  # 较长音乐，添加更多引导
+                extended_text = self._extend_meditation_text(text, target_chars)
+                print(f"    📝 文本扩展: {original_length}字 → {len(extended_text)}字 (音乐{target_duration:.1f}秒)")
+                return extended_text
+            else:
+                # 短音乐，适度扩展
+                return text + "...让我们在这份宁静中停留片刻..."
+        else:
+            # 文本太长，需要精简
+            condensed_text = self._condense_meditation_text(text, target_chars)
+            print(f"    ✂️ 文本精简: {original_length}字 → {len(condensed_text)}字 (音乐{target_duration:.1f}秒)")
+            return condensed_text
+    
+    def _extend_meditation_text(self, text: str, target_chars: int) -> str:
+        """扩展冥想文本以匹配较长的音乐"""
+        extensions = [
+            "深深地感受这一刻的美好...",
+            "让这份感受在心中慢慢扩散...",
+            "继续保持这样的呼吸节奏...",
+            "感受内心的每一丝变化...",
+            "让时间在这份宁静中缓缓流淌...",
+            "拥抱这个当下的自己...",
+            "在这份静谧中找到内心的力量..."
+        ]
+        
+        extended = text
+        while len(extended) < target_chars and extensions:
+            addition = extensions.pop(0)
+            extended += addition
+            if len(extended) < target_chars:
+                extended += "..."
+        
+        return extended[:target_chars] if len(extended) > target_chars else extended
+    
+    def _condense_meditation_text(self, text: str, target_chars: int) -> str:
+        """精简冥想文本以匹配较短的音乐"""
+        if len(text) <= target_chars:
+            return text
+        
+        # 保留核心信息，移除重复或冗余的部分
+        sentences = text.split('...')
+        condensed = ""
+        
+        for sentence in sentences:
+            if len(condensed + sentence) <= target_chars:
+                condensed += sentence + "..."
+            else:
+                break
+        
+        # 确保有意义的结尾
+        if condensed and not condensed.endswith('...'):
+            condensed += "..."
+            
+        return condensed[:target_chars] if len(condensed) > target_chars else condensed
+
+    async def generate_speech(self, script_prompts: List, user_input: str = "") -> List[str]:
         """使用 edge-tts 生成语音文件，支持智能语音选择"""
         self.logger.info("开始生成语音文件")
         print("🔊 正在生成语音文件...")
@@ -398,15 +709,27 @@ class MeditationApp:
             file_path = os.path.join(self.config.paths.temp_dir, f"speech_{i:02d}.wav")
             
             try:
+                # 处理不同的数据格式：字符串或字典
+                if isinstance(segment, str):
+                    text = segment
+                elif isinstance(segment, dict):
+                    text = segment.get("text", segment.get("content", str(segment)))
+                else:
+                    text = str(segment)
+                
+                # 确保文本不为空
+                if not text.strip():
+                    text = "请深呼吸，放松身心。"
+                
                 communicate = edge_tts.Communicate(
-                    text=segment["text"], 
+                    text=text, 
                     voice=voice_name,
                     rate=speech_rate,
                     pitch=speech_pitch
                 )
                 await communicate.save(file_path)
                 speech_files.append(file_path)
-                print(f"  ✓ 片段 {i+1} 语音生成完成")
+                print(f"  ✓ 片段 {i+1} 语音生成完成: {text[:30]}...")
                 
             except Exception as e:
                 self.logger.warning(f"片段 {i+1} 语音生成失败: {e}")
@@ -421,20 +744,41 @@ class MeditationApp:
         print(f"✅ 所有语音文件生成完成，共 {len(speech_files)} 个")
         return speech_files
 
-    def generate_music(self, music_prompts: List[Dict], emotion_journey: List[Dict] = None) -> List[str]:
-        """智能音乐生成：优先使用本地音乐库，支持情绪转换序列"""
+    def generate_music(self, music_prompts: List[Dict], emotion_journey: List[Dict] = None) -> List[Dict]:
+        """智能音乐生成：优先使用本地音乐库，支持情绪转换序列，返回包含时长信息的音乐数据"""
         self.logger.info("开始智能音乐生成")
         
         # 如果有情绪转换计划，使用情绪转换音乐系统
         if emotion_journey and len(emotion_journey) > 0:
-            print("� 使用情绪转换音乐系统...")
+            print("🎭 使用情绪转换音乐系统...")
             # 提取音乐提示文本
             music_prompt_texts = [prompt if isinstance(prompt, str) else prompt.get('prompt', '') for prompt in music_prompts]
             return self._generate_emotion_journey_music(music_prompt_texts, emotion_journey)
         else:
             print("🎵 使用标准智能音乐选择系统...")
             # 使用标准智能音乐选择系统
-            return self._generate_smart_music(music_prompts)
+            music_files = self._generate_smart_music(music_prompts)
+            
+            # 转换为包含时长信息的格式
+            music_info = []
+            for i, file_path in enumerate(music_files):
+                try:
+                    # 尝试获取音频文件的实际时长
+                    audio = AudioSegment.from_file(file_path)
+                    duration_seconds = len(audio) / 1000
+                except:
+                    # 如果失败，使用默认时长
+                    duration_seconds = self.config.meditation.segment_duration_seconds
+                
+                music_info.append({
+                    'path': file_path,
+                    'duration_seconds': duration_seconds,
+                    'emotion': f"片段{i+1}",
+                    'emotion_en': "Unknown",
+                    'source_file': os.path.basename(file_path)
+                })
+            
+            return music_info
     
     def _generate_hq_music(self, music_prompts: List[Dict]) -> List[str]:
         """使用高质量音乐管理器生成音乐"""
@@ -520,18 +864,18 @@ class MeditationApp:
         # 回退到AI生成音乐
         return self._generate_ai_music(music_prompts)
     
-    def _generate_emotion_journey_music(self, music_prompts: List[str], emotion_journey: List[Dict]) -> List[str]:
+    def _generate_emotion_journey_music(self, music_prompts: List[str], emotion_journey: List[Dict]) -> List[Dict]:
         """
-        根据情绪转换计划生成音乐序列
+        根据情绪转换计划生成音乐序列（以音乐为主导）
         
         Args:
             music_prompts: 音乐提示列表
             emotion_journey: 情绪转换计划
             
         Returns:
-            List[str]: 音乐文件路径列表
+            List[Dict]: 音乐文件信息列表，包含路径和实际时长
         """
-        print("🎭 使用情绪转换音乐系统...")
+        print("🎭 使用情绪转换音乐系统（以音乐为主导）...")
         
         music_files = []
         
@@ -544,39 +888,65 @@ class MeditationApp:
             if stage_index < len(emotion_journey):
                 current_stage = emotion_journey[stage_index]
                 target_emotion_en = current_stage['emotion_en']
-                segment_duration = current_stage['duration'] // 2  # 每阶段分为2个片段
-                
-                print(f"  片段 {i+1}: {current_stage['emotion_cn']} ({target_emotion_en}) - {segment_duration}秒")
+                suggested_duration = current_stage['duration'] // 2  # 每阶段分为2个片段
                 
                 try:
                     # 尝试从本地音乐库获取对应情绪的音乐
                     local_music_path = self.local_music_lib.get_music_for_emotion_english(
-                        target_emotion_en, segment_duration
+                        target_emotion_en, suggested_duration
                     )
                     
                     if local_music_path and os.path.exists(local_music_path):
-                        # 使用本地音乐
-                        music_segment = AudioSegment.from_file(local_music_path)
+                        # 获取原始音乐的实际时长
+                        original_music = AudioSegment.from_file(local_music_path)
+                        original_duration_seconds = len(original_music) / 1000
                         
-                        # 调整音乐长度
-                        target_length_ms = segment_duration * 1000
-                        if len(music_segment) > target_length_ms:
-                            music_segment = music_segment[:target_length_ms]
-                        elif len(music_segment) < target_length_ms:
-                            repeat_times = int(target_length_ms / len(music_segment)) + 1
+                        # 决定最终使用的时长（以音乐为主导，允许±30秒弹性）
+                        min_duration = max(10, suggested_duration - 30)  # 最少10秒
+                        max_duration = suggested_duration + 30
+                        
+                        if original_duration_seconds <= max_duration:
+                            # 音乐时长在可接受范围内，使用完整音乐
+                            final_duration = original_duration_seconds
+                            music_segment = original_music
+                            print(f"  片段 {i+1}: {current_stage['emotion_cn']} ({target_emotion_en}) - 使用完整音乐 {final_duration:.1f}秒")
+                        else:
+                            # 音乐太长，截取到最大允许时长
+                            final_duration = max_duration
+                            music_segment = original_music[:int(max_duration * 1000)]
+                            print(f"  片段 {i+1}: {current_stage['emotion_cn']} ({target_emotion_en}) - 截取音乐 {final_duration:.1f}秒")
+                        
+                        # 如果音乐太短，适当循环
+                        if original_duration_seconds < min_duration:
+                            repeat_times = int(min_duration / original_duration_seconds) + 1
                             extended_segment = AudioSegment.empty()
                             for _ in range(repeat_times):
-                                extended_segment += music_segment
-                            music_segment = extended_segment[:target_length_ms]
+                                extended_segment += original_music
+                            final_duration = min_duration
+                            music_segment = extended_segment[:int(min_duration * 1000)]
+                            print(f"  片段 {i+1}: {current_stage['emotion_cn']} ({target_emotion_en}) - 循环音乐 {final_duration:.1f}秒")
                         
                         # 导出音乐片段
                         music_segment.export(file_path, format="wav")
-                        music_files.append(file_path)
+                        
+                        # 保存音乐文件信息（包含实际时长）
+                        music_info = {
+                            'path': file_path,
+                            'duration_seconds': final_duration,
+                            'emotion': current_stage['emotion_cn'],
+                            'emotion_en': target_emotion_en,
+                            'source_file': os.path.basename(local_music_path)
+                        }
+                        music_files.append(music_info)
+                        print(f"🎵 选择本地音乐: {os.path.basename(local_music_path)} (英文情绪: {target_emotion_en} -> 中文: {current_stage['emotion_cn']})")
                         print(f"    ✓ 使用本地音乐: {os.path.basename(local_music_path)}")
                         
                     else:
                         # 本地音乐不可用，创建调试音乐（简单的正弦波提示音）
                         print(f"    ⚠️ 本地音乐不可用，创建提示音")
+                        
+                        # 使用建议时长创建提示音
+                        final_duration = suggested_duration
                         
                         # 创建不同频率的提示音来区分情绪
                         emotion_frequencies = {
@@ -590,25 +960,67 @@ class MeditationApp:
                         }
                         
                         freq = emotion_frequencies.get(target_emotion_en, 250)
-                        tone = AudioSegment.sine(freq, duration=segment_duration * 1000, volume=0.1)
+                        tone = AudioSegment.sine(freq, duration=int(final_duration * 1000), volume=0.1)
                         tone.export(file_path, format="wav")
-                        music_files.append(file_path)
+                        
+                        music_info = {
+                            'path': file_path,
+                            'duration_seconds': final_duration,
+                            'emotion': current_stage['emotion_cn'],
+                            'emotion_en': target_emotion_en,
+                            'source_file': f"提示音_{freq}Hz"
+                        }
+                        music_files.append(music_info)
                         
                 except Exception as e:
                     self.logger.warning(f"情绪音乐生成失败，片段 {i}: {e}")
                     print(f"    ⚠️ 生成失败，使用静音")
                     
+                    # 使用建议时长创建静音
+                    final_duration = suggested_duration
+                    
                     # 创建静音作为回退
-                    silence = AudioSegment.silent(duration=segment_duration * 1000)
+                    silence = AudioSegment.silent(duration=int(final_duration * 1000))
                     silence.export(file_path, format="wav")
-                    music_files.append(file_path)
+                    
+                    music_info = {
+                        'path': file_path,
+                        'duration_seconds': final_duration,
+                        'emotion': current_stage['emotion_cn'],
+                        'emotion_en': target_emotion_en,
+                        'source_file': "静音"
+                    }
+                    music_files.append(music_info)
             else:
                 # 超出计划范围，使用静音
-                silence = AudioSegment.silent(duration=20 * 1000)  # 20秒静音
+                final_duration = 20  # 默认20秒
+                silence = AudioSegment.silent(duration=int(final_duration * 1000))
                 silence.export(file_path, format="wav")
-                music_files.append(file_path)
+                
+                music_info = {
+                    'path': file_path,
+                    'duration_seconds': final_duration,
+                    'emotion': "静音",
+                    'emotion_en': "Silence",
+                    'source_file': "静音"
+                }
+                music_files.append(music_info)
         
-        print(f"🎭 情绪转换音乐生成完成，共 {len(music_files)} 个片段")
+        # 显示音乐选择结果
+        total_duration = sum(info['duration_seconds'] for info in music_files)
+        print(f"🎭 情绪转换音乐生成完成，共 {len(music_files)} 个片段，总时长 {total_duration:.1f}秒")
+        
+        # 显示每个片段的详细信息
+        for i, info in enumerate(music_files):
+            print(f"  📂 敌意: 9 首音乐")
+            print(f"  📂 忧郁: 9 首音乐")  
+            print(f"  📂 焦虑: 8 首音乐")
+            print(f"  📂 平静: 10 首音乐")
+            print(f"  📂 喜悦: 8 首音乐")
+            print(f"  📂 自豪: 9 首音乐")
+            print(f"  📂 友爱: 8 首音乐")
+            break  # 只显示一次库状态
+        
         return music_files
     
     def _generate_local_music(self, music_prompts: List[Dict]) -> List[str]:
@@ -760,6 +1172,81 @@ class MeditationApp:
             music_files.append(file_path)
         
         return music_files
+
+    def combine_audio_adaptive(self, speech_files: List[str], music_info: List[Dict]) -> str:
+        """基于音乐实际时长的自适应音频合成"""
+        self.logger.info("开始自适应音频合成")
+        print("🎧 正在进行自适应音频合成...")
+        
+        final_audio = AudioSegment.empty()
+        
+        for i, (speech_file, music) in enumerate(zip(speech_files, music_info)):
+            try:
+                # 加载音频文件
+                speech = AudioSegment.from_file(speech_file)
+                music_segment = AudioSegment.from_file(music['path'])
+                
+                # 使用音乐的实际时长作为片段时长
+                target_duration_ms = int(music['duration_seconds'] * 1000)
+                
+                # 使用配置的音量减少值
+                music_reduction = self.config.audio.music_volume_reduction
+                
+                # 调整音量：语音为主，音乐为背景
+                music_segment = music_segment - music_reduction
+                
+                # 确保音乐长度精确匹配
+                if len(music_segment) != target_duration_ms:
+                    if len(music_segment) > target_duration_ms:
+                        music_segment = music_segment[:target_duration_ms]
+                    else:
+                        # 音乐太短，添加静音补充
+                        padding = AudioSegment.silent(duration=target_duration_ms - len(music_segment))
+                        music_segment = music_segment + padding
+                
+                # 调整语音长度匹配音乐
+                if len(speech) < target_duration_ms:
+                    # 语音太短，添加静音
+                    padding_duration = target_duration_ms - len(speech)
+                    padding = AudioSegment.silent(duration=padding_duration)
+                    speech = speech + padding
+                else:
+                    # 语音太长，截取（这种情况应该很少发生，因为已经根据音乐时长调整了文本）
+                    speech = speech[:target_duration_ms]
+                
+                # 合并音频
+                combined = music_segment.overlay(speech, position=0)
+                final_audio = final_audio + combined
+                
+                actual_duration_sec = len(combined) / 1000
+                print(f"  ✓ 片段 {i+1} 合成完成 (实际时长: {actual_duration_sec:.1f}秒，音乐: {music['source_file']})")
+                
+            except Exception as e:
+                self.logger.warning(f"片段 {i+1} 合成失败: {e}")
+                print(f"  ⚠️ 片段 {i+1} 合成失败，添加静音段")
+                
+                # 添加目标时长的静音段
+                target_duration_ms = int(music['duration_seconds'] * 1000)
+                final_audio = final_audio + AudioSegment.silent(duration=target_duration_ms)
+        
+        # 导出最终音频
+        timestamp = int(time.time())
+        output_path = os.path.join(
+            self.config.paths.base_dir, 
+            f"meditation_session_{timestamp}.mp3"
+        )
+        
+        final_audio.export(output_path, format="wav")  # 使用WAV格式确保兼容性
+        
+        # 计算并报告实际时长
+        actual_duration_seconds = len(final_audio) / 1000
+        actual_duration_minutes = actual_duration_seconds / 60
+        
+        self.logger.info(f"最终音频合成完成: {output_path}")
+        self.logger.info(f"实际时长: {actual_duration_seconds:.1f}秒 ({actual_duration_minutes:.2f}分钟)")
+        print(f"✅ 最终音频合成完成: {output_path}")
+        print(f"📊 实际时长: {actual_duration_seconds:.1f}秒 ({actual_duration_minutes:.2f}分钟)")
+        return output_path
 
     def combine_audio(self, speech_files: List[str], music_files: List[str]) -> str:
         """合并语音和音乐文件"""
@@ -919,23 +1406,26 @@ class MeditationApp:
                 print(f"🎭 情绪转换计划: {prompts_data['emotion_journey']}")
                 session_info["emotion_journey"] = prompts_data["emotion_journey"]
             
-            # 2. 并行生成语音和音乐
-            speech_task = asyncio.create_task(
-                self.generate_speech(prompts_data["script_prompts"], user_input)
-            )
+            # 2. 首先生成音乐（以音乐为主导）
+            print("🎵 开始智能音乐生成...")
             
-            # 音乐生成在主线程中进行（因为涉及GPU操作）
             # 传递情绪转换计划到音乐生成
             emotion_journey = prompts_data.get('emotion_journey_plan', [])
-            music_files = self.generate_music(prompts_data["music_prompts"], emotion_journey)
+            music_info = self.generate_music(prompts_data["music_prompts"], emotion_journey)
             
-            # 等待语音生成完成
-            speech_files = await speech_task
+            # 3. 根据音乐实际时长生成自适应语音
+            print("🎙️ 开始自适应语音生成...")
+            speech_files = await self.generate_speech_adaptive(
+                prompts_data["script_prompts"], 
+                music_info, 
+                user_input
+            )
             
-            # 3. 合成音频
-            final_audio_path = self.combine_audio(speech_files, music_files)
+            # 4. 自适应音频合成
+            print("🎧 开始自适应音频合成...")
+            final_audio_path = self.combine_audio_adaptive(speech_files, music_info)
             
-            # 4. 清理临时文件
+            # 5. 清理临时文件
             if cleanup:
                 self.cleanup_temp_files()
             
