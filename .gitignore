@@ -1,63 +1,53 @@
-# Python»º´æºÍ±àÒëÎÄ¼ş
+# Python ç¼“å­˜ä¸æ„å»ºäº§ç‰©
 __pycache__/
 *.py[cod]
-*.class
 *.so
+build/
+dist/
+*.egg-info/
 
-# ĞéÄâ»·¾³
+# è™šæ‹Ÿç¯å¢ƒ
 .env
 .venv/
 env/
 venv/
-ENV/
 
-# IDEºÍ±à¼­Æ÷
+# ç¼–è¾‘å™¨ä¸ç³»ç»Ÿæ–‡ä»¶
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# ²Ù×÷ÏµÍ³
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# ÈÕÖ¾ÎÄ¼ş
+# æ—¥å¿—ã€æµ‹è¯•ç¼“å­˜ä¸ä¸´æ—¶æ–‡ä»¶
 *.log
 logs/
-
-# ÅäÖÃÎÄ¼ş£¨±£»¤Ãô¸ĞĞÅÏ¢£©
-config.json
-
-# ÁÙÊ±ÎÄ¼ş
+.coverage
+.pytest_cache/
+htmlcov/
+.learnings/
 *.tmp
 *.temp
 temp/
 
-# ÒôÆµÊä³öºÍÉú³ÉÎÄ¼ş
-generated_audio/
-output/
-
-# AIÄ£ĞÍºÍ»º´æ
-models/
-.cache/
-.transformers_cache/
-
-# APIÃÜÔ¿ºÍÆ¾¾İ
+# æœ¬æœºç§æœ‰é…ç½®ä¸å‡­æ®
+config.json
 *.key
 *.pem
 credentials.json
 secrets.json
 
-# Êı¾İ¿âÎÄ¼ş
-*.db
-*.sqlite
+# è¿è¡Œæ—¶è¾“å‡ºï¼›music_library/ ä¸­çš„æ­£å¼ç´ æä¸å—å½±å“
+/music_[0-9][0-9].wav
+/speech_[0-9][0-9].wav
+/speech_[0-9][0-9].mp3
+/voice_refs/
+generated_audio/
+output/
 
-# ±¸·İÎÄ¼ş
-*.bak
-*.backup
-
-# ²âÊÔºÍ¸²¸ÇÂÊ
-.coverage
-.pytest_cache/
-htmlcov/
+# AI æ¨¡å‹ä¸ç¼“å­˜
+models/
+.cache/
+.transformers_cache/

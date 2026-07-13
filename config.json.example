@@ -1,0 +1,34 @@
+{
+  "api_keys": {
+    "deepseek_api_key": "PUT_YOUR_KEY_OR_USE_ENV",
+    "deepseek_base_url": "https://api.deepseek.com/v1",
+    "minimax_api_key": "PUT_YOUR_KEY_OR_USE_ENV",
+    "minimax_base_url": "https://api.minimaxi.com"
+  },
+  "paths": {
+    "base_dir": ""
+  },
+  "audio_settings": {
+    "preferred_track_duration_seconds": 60,
+    "music_transition_fade_seconds": 3.0,
+    "tts_backend": "minimax",
+    "minimax_model": "speech-2.8-hd",
+    "minimax_voice_id": "Chinese (Mandarin)_Gentle_Senior",
+    "minimax_speed": 0.8,
+    "minimax_volume": 1.0,
+    "minimax_pitch": 0,
+    "minimax_emotion": "calm",
+    "minimax_sample_rate": 32000,
+    "minimax_bitrate": 128000,
+    "minimax_timeout_seconds": 180,
+    "minimax_max_attempts": 3,
+    "speech_start_delay_seconds": 4.0,
+    "music_volume_reduction": 8
+  },
+  "meditation_settings": {
+    "default_duration_minutes": 5,
+    "segment_duration_seconds": 20,
+    "max_duration_minutes": 15,
+    "min_duration_minutes": 3
+  }
+}

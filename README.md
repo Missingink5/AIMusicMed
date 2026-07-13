@@ -1,222 +1,175 @@
-<<<<<<< HEAD
-# AIMusicMed
-=======
-# AI 情绪转换冥想生成器
+# AIMusicMed：AI 情绪转换冥想音频生成器
 
-🎭 **核心特性：情绪转换冥想系统** - 根据用户情绪状态，自动规划"消极→中性→积极"的情绪转换路径，生成同步的音乐和冥想引导语。
+根据我们的调研，ISO原则的音乐（先匹配当前情绪，再逐步转变音乐情绪至积极的音乐）作为背景音乐的冥想在焦虑、愤怒等高唤醒负面情绪的改善显著好于一般平静的冥想音乐。
 
-## 🌟 情绪转换功能
+输入一段当前感受和目标时长，AIMusicMed 会识别主要情绪，规划三阶段情绪路径，从 61 首本地音乐中选择整曲，为每首音乐生成与内容匹配的引导词，最后合成为可播放的 WAV。
 
-### 智能情绪分析
-- 分析用户倾诉内容，识别7种主要情绪：焦虑、忧郁、敌意、平静、喜悦、自豪、友爱
-- 根据情绪状态自动规划三阶段转换路径
+项目采用音乐情绪调节中的ISO原则设计思路：先用音乐承接用户当下的情绪，再逐步过渡到平静或积极状态。前期调研将这条路径视为值得验证的产品假设。
 
-### 情绪转换路径
-- **消极情绪**: 焦虑→平静→喜悦 | 忧郁→平静→友爱 | 敌意→平静→友爱
-- **中性情绪**: 平静→友爱→喜悦  
-- **积极情绪**: 维持并深化当前积极状态
+> 这是产品原型和个人放松工具，不提供心理诊断、治疗或危机干预。出现持续心理困扰或紧急风险时，请联系专业机构或当地紧急服务。
 
-### 同步音乐选择
-- 优先使用本地音乐库（61首音乐，7个情绪分类）
-- 音乐情绪与冥想引导语完全同步
-- 每个转换阶段2个音频段落，共6段
+## 工作流
 
-### 动态时长分配
-- 根据情绪状态智能分配各阶段时长
-- 消极情绪：40%缓解 + 35%平静 + 25%积极
-- 确保充分的情绪转换时间
-
-## 📁 核心文件结构
-
-| 文件 | 作用 |
-|------|------|
-| py313_meditation_app.py | 核心逻辑：情绪分析、转换规划、音乐选择、语音生成 |
-| run_py313_app.py | 情绪转换式用户交互入口，D盘缓存保护 |
-| local_music_library.py | 本地音乐库管理，支持情绪分类和英文映射 |
-| audio_compat.py | 自研音频处理层，替代pydub，支持Python 3.13 |
-| config_manager.py | 配置管理，创建目录结构 |
-| voice_profiles.py | 情绪→语音参数智能映射 |
-| test_emotion_transition.py | 情绪转换系统测试脚本 |
-| EMOTION_TRANSITION_GUIDE.md | 详细使用指南 |
-
-## 🎵 音乐库结构
-```
-music_library/
-├── Anxiety/     # 焦虑情绪音乐 (8首)
-├── Happy/       # 喜悦情绪音乐 (8首) 
-├── Hostility/   # 敌意情绪音乐 (9首)
-├── Love/        # 友爱情绪音乐 (8首)
-├── Pride/       # 自豪情绪音乐 (9首)
-├── Quiet/       # 平静情绪音乐 (10首)
-└── Sad/         # 忧郁情绪音乐 (9首)
+```text
+用户表达与目标时长
+  → DeepSeek 识别主要情绪
+  → 固定 SOP 规划三阶段情绪路径
+  → 从本地曲库选择整首音乐并分析声学特征
+  → DeepSeek 按具体曲目生成逐段引导词
+  → MiniMax TTS 生成语音
+  → 语音混合、淡入淡出和重叠 crossfade
+  → 输出 WAV
 ```
 
-## 🚀 快速开始
+DeepSeek 不可用时，情绪识别会回退到关键词规则，引导词会回退到本地音乐特征模板，并在运行日志中明确标记。MiniMax 是唯一语音后端；请求失败时程序会直接报错，不会静默切换到低质量语音。
 
-### 1. 测试情绪转换系统
-```bash
-python test_emotion_transition.py
+## Demo 亮点
+
+- 情绪识别覆盖焦虑、忧郁、敌意、平静、喜悦、自豪、友爱 7 类情绪。
+- 情绪路径由可解释的固定规则生成，典型路径为“当前情绪 → 平静 → 积极情绪”。
+- 引导词在选定音乐后生成，并绑定曲目、阶段目标、声学特征和校验指纹，避免文案与音乐错配。
+- 音乐整首播放，不裁剪、不循环。相邻曲目默认使用 3 秒重叠 crossfade。
+- 每首音乐开头默认保留 4 秒纯音乐，再进入语音引导。
+- MiniMax `speech-2.8-hd` 支持官方系统音色，也支持在获得授权后配置克隆音色。
+
+## 实际运行链路
+
+```text
+run_py313_app.py
+  → load_config
+  → MeditationApp.create_meditation_session
+    → prepare_session_plan
+    → generate_music
+    → generate_guidance_for_music
+    → generate_speech_adaptive
+    → combine_audio_adaptive
+    → meditation_session_<time_ns>.wav
 ```
 
-### 2. 开始使用
-```bash
-python run_py313_app.py
+程序会根据目标时长按“每首约一分钟”估算曲目数量。由于实际曲长约为 56 至 78 秒，并且相邻曲目存在重叠，最终音频时长通常不会与输入分钟数完全相同。
+
+一次 5 分钟会话的终端结果示例：
+
+```text
+冥想会话创建完成
+实际生成片段：5 个
+实际总时长：327.8 秒
+音频后端：librosa + soundfile
 ```
 
-### 3. 体验情绪转换
-1. 详细描述您的当前情绪状态
-2. 系统自动分析并规划转换路径
-3. 生成6段同步的音乐+引导语
-4. 享受从消极到积极的情绪转换旅程
+## 代码结构
 
-## 📋 详细安装步骤
+| 路径 | 用途 |
+| --- | --- |
+| `run_py313_app.py` | 命令行入口和交互 |
+| `py313_meditation_app.py` | 情绪、文本、音乐、TTS 和混音主流程 |
+| `meditation_sop.py` | 三阶段路径规则和曲目数量规划 |
+| `local_music_library.py` | 曲库扫描、情绪映射和关键词回退 |
+| `minimax_tts_backend.py` | MiniMax 请求、WAV 校验、重试和批量进度 |
+| `audio_compat.py` | 音频读取、混合、重采样、crossfade 和峰值控制 |
+| `config_manager.py` | JSON、`.env` 和环境变量配置 |
+| `scripts/setup_minimax_voice.py` | 授权音色上传、克隆和激活验证 |
+| `music_library/` | 7 类、61 个正式 WAV 素材文件 |
+| `tests/` | 离线单元测试与整曲 smoke 脚本 |
+| `config.json.example` | 不含密钥的配置模板 |
+| `requirements.txt` | Python 运行依赖 |
 
-## 1. 环境准备 (Windows PowerShell)
+## 快速开始
+
+建议使用 Python 3.11 至 3.13。当前项目已在 Python 3.13.5 上验证。
+
 ```powershell
-# 进入项目根目录
-cd D:\PYTHON\PythonProject
-
-# 创建虚拟环境 (可选)
+git clone https://github.com/Missingink5/AIMusicMed.git
+cd AIMusicMed
 python -m venv .venv
-
-# 激活
-. .venv\Scripts\Activate.ps1
-
-# 国内网络建议先设置 pip 源 (可选)
-# pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 安装依赖
-pip install -r requirements.txt
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-## 2. 配置
-编辑 `config.json`：
-```json
-{
-  "api_keys": {
-    "deepseek_api_key": "替换为你的API KEY",
-    "deepseek_base_url": "https://api.deepseek.com/v1"
-  },
-  "paths": {
-    "base_dir": "D:/MyMeditationApp"
-  },
-  "audio_settings": {
-    "music_model": "facebook/musicgen-small",
-    "tts_voice": "zh-CN-XiaoxiaoNeural",
-    "speech_rate": "-20%",
-    "speech_pitch": "-5Hz",
-    "music_volume_reduction": 8,
-    "enable_ai_music": true
-  },
-  "meditation_settings": {
-    "default_duration_minutes": 5,
-    "segment_duration_seconds": 20,
-    "max_duration_minutes": 15,
-    "min_duration_minutes": 1
-  }
-}
-```
-也可以不写 `deepseek_api_key`，改为设置环境变量：
+复制本机配置：
+
 ```powershell
-$Env:DEEPSEEK_API_KEY = "你的Key"
+Copy-Item config.json.example config.json
+notepad .env
 ```
 
-Linux / macOS:
-```bash
-export DEEPSEEK_API_KEY="你的Key"
-export MEDITATION_BASE_DIR=~/meditation_app   # 可选，默认也会回退到这里
+在 `.env` 中填写：
+
+```env
+MINIMAX_API_KEY=你的_MiniMax_API_Key
+DEEPSEEK_API_KEY=你的_DeepSeek_API_Key
 ```
 
-若 `config.json` 中 `paths` 留空，程序会自动：
-- Windows: 使用 `D:/MyMeditationApp`
-- 其他系统: 使用 `~/meditation_app`
+`MINIMAX_API_KEY` 是完整生成所必需的。`DEEPSEEK_API_KEY` 可选；未配置或请求失败时，程序会使用本地回退逻辑。
 
-## 3. 运行
-交互式：
+`.env` 和 `config.json` 已被 `.gitignore` 排除。不要把真实密钥写入源码、README、示例配置或 Git 提交。
+
+## 配置
+
+常用配置位于 `config.json`：
+
+- `paths.base_dir`：最终 WAV 和日志的保存目录。留空时可通过 `MEDITATION_BASE_DIR` 指定。
+- `preferred_track_duration_seconds`：规划曲目数量时采用的粗略单曲时长，默认 60 秒。
+- `music_transition_fade_seconds`：淡入淡出和相邻曲目的重叠时长，默认 3 秒。
+- `tts_backend`：只能设置为 `minimax`。
+- `minimax_model`：默认 `speech-2.8-hd`。
+- `minimax_voice_id`：系统音色或已激活的授权克隆音色 ID。
+- `minimax_speed`：默认 `0.8`，用于较慢的冥想引导语速。
+- `speech_start_delay_seconds`：每首音乐开始后等待多久进入语音，默认 4 秒。
+- `music_volume_reduction`：混音时音乐相对语音的衰减量，默认 8 dB。
+
+本机 Demo 的成品目录可配置为：
+
+```text
+D:\ISO音乐-AI冥想疗愈生成\示例输出
+```
+
+## 运行
+
 ```powershell
+.\.venv\Scripts\Activate.ps1
 python run_py313_app.py
 ```
-或直接（示例脚本主函数）：
+
+程序会依次要求选择或输入当前感受、设置时长并确认生成。完整运行会调用 DeepSeek 和 MiniMax，依赖网络、账户额度和有效音色。
+
+## 可选：配置授权克隆音色
+
+仓库不分发参考人声。请把已获得明确授权的 WAV 放入被忽略的 `voice_refs/`，再使用一个从未创建过的新 `voice-id`：
+
 ```powershell
-python py313_meditation_app.py
+python scripts/setup_minimax_voice.py "voice_refs\your_authorized_reference.wav" `
+  --voice-id AIMusicMedDemo20260714A --confirm-consent
 ```
 
-## 4. 输出
-生成的合成音频 (wav) 存放于 `config.json` 中 `paths.base_dir`，临时碎片存放在其 `temp/` 子目录，会在流程结束被清理。
+该命令会把参考音频上传到 MiniMax，并执行一次激活验证，可能产生费用。创建成功后，将同一个 ID 写入本机 `config.json` 的 `minimax_voice_id`。不要上传未获授权的声音，也不要重复使用已经存在的 `voice-id`。
 
-## 5. 常见问题
-| 问题 | 处理 |
-|------|------|
-| torch / transformers 首次下载慢 | 首次会下载模型到 D:\MyMeditationApp\cache；耐心等待或配置镜像 |
-| 内存/显存不足 | 降低时长、增大 `music_volume_reduction` 不影响内存；必要时禁用 `enable_ai_music` |
-| 语音失败 | 检查网络，edge-tts 需要外网；失败片段会用静音替代 |
-| DeepSeek 超时 | 调整网络或缩短输入；内部超时时间设为 60 秒 |
+## 离线验证
 
-## 6. 二次精简说明
-当前仓库已是最小集合；原裁剪脚本 `repo_prune.py` 已移除，无需额外操作。
+以下命令不会调用付费 API：
 
-## 7. 最小调用示例 (以代码方式集成)
-```python
-import asyncio
-from py313_meditation_app import MeditationApp
-
-async def demo():
-    app = MeditationApp()
-    path, info = await app.create_meditation_session("我最近压力有点大", duration_minutes=3)
-    print("生成:", path)
-
-asyncio.run(demo())
+```powershell
+$env:PYTHONUTF8 = "1"
+$env:PYTHONDONTWRITEBYTECODE = "1"
+python -m pip check
+python -m unittest discover -s tests -v
+python local_music_library.py
 ```
 
-## 8. 项目清理说明
+当前基线为 26 项单元测试通过，曲库扫描结果为 7 个分类、61 个 WAV 文件。
 
-本项目已完成彻底清理，移除了所有测试文件、临时文件和不必要的文档：
+## 音乐素材与响度
 
-### 已删除的文件类型：
-- **测试文件**: 所有 `test_*.py` 和 `*_test.py` 文件
-- **音频样本**: 所有测试生成的 `.wav` 文件
-- **开发工具**: 配置检查、语音测试、部署脚本等
-- **临时文档**: 各种报告和指南的 markdown 文件
-- **部署脚本**: 除核心的 `deploy.sh` 外的所有部署工具
+曲库使用 48 kHz、双声道、PCM 24-bit WAV。非焦虑类别约为 `-16 LUFS`，焦虑类别约为 `-23 LUFS`，保留约 7 dB 的设计差异；真峰值限制在约 `-2 dBTP` 以下。新增或替换素材时应延续这套响度规则。
 
-### 保留的核心文件：
-```
-PythonProject/
-├── py313_meditation_app.py      # 主应用程序
-├── run_py313_app.py            # 启动脚本  
-├── config.json                 # 配置文件
-├── config.json.example         # 配置模板
-├── config_manager.py           # 配置管理
-├── audio_compat.py            # 音频兼容层
-├── voice_profiles.py          # 语音配置
-├── local_music_library.py     # 音乐库管理
-├── high_quality_music_manager_clean.py  # 音乐管理器
-├── music_library/             # 音乐资源库（61首音乐）
-├── requirements.txt           # 依赖包列表
-├── README.md                 # 项目说明
-├── .gitignore               # Git忽略文件
-├── Dockerfile               # Docker配置
-├── docker-compose.yml       # Docker编排
-└── deploy.sh               # 部署脚本
-```
+公开演示、发布仓库或再分发音频前，请确认拥有相应音乐素材的授权。当前 61 个文件中有一组内容重复，项目按既有素材编号保留两份，因此共有 60 份唯一音频内容。
 
-清理统计：删除了135个文件和5个目录，项目结构更加简洁明了。
+## 隐私与限制
 
-## 9. 语音停顿优化
-
-本项目已优化语音自然度，实现了智能语音停顿：
-
-### 停顿系统：
-- **句子停顿**: 每句话结束后停顿3秒（用"......"表示）
-- **短语停顿**: 逗号处停顿2秒（用"...."表示）
-- **语速设置**: -50%慢速，确保舒缓节奏
-- **音调调整**: -10Hz，声音更加温和
-
-### 语音配置：
-- **主声音**: zh-CN-XiaoxiaoNeural（晓晓）
-- **停顿机制**: 点号标记自动停顿，避免SSML标签被朗读
-- **自然效果**: 纯文本+点号实现自然停顿
-
-## 10. 授权
-本仓库为个人冥想项目，代码简洁实用。如需开源请自行补充 LICENSE。
->>>>>>> origin/master
+- 用户输入会发送给 DeepSeek；生成的引导词会发送给 MiniMax。请避免输入能够识别个人身份的敏感信息。
+- 七类情绪识别和固定三阶段路径用于产品演示，不属于临床评估。
+- 情绪路径尚未经过本项目的疗效验证。
+- 当前只有命令行界面，完整生成依赖 MiniMax 网络与账户额度。
+- 曲目会在符合阶段情绪的候选中选择，同一输入的结果可能不同。
+- 整曲策略会让最终时长与规划时长存在偏差。

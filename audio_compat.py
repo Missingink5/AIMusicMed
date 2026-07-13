@@ -7,8 +7,7 @@ import os
 import numpy as np
 import soundfile as sf
 import librosa
-from typing import Union, Optional, Tuple
-import tempfile
+from typing import Union
 
 
 class AudioSegment:
@@ -53,13 +52,13 @@ class AudioSegment:
             sample_rate: 采样率
         """
         samples = int(duration * sample_rate / 1000)
-        data = np.zeros((1, samples))  # 单声道静音
+        data = np.zeros((1, samples), dtype=np.float32)  # 单声道静音
         return cls(data, sample_rate)
     
     @classmethod
     def empty(cls) -> 'AudioSegment':
         """创建空音频片段"""
-        return cls(np.array([]).reshape(1, 0), 22050)
+        return cls(np.array([], dtype=np.float32).reshape(1, 0), 22050)
     
     def __len__(self) -> int:
         """返回音频长度（毫秒）"""
@@ -104,6 +103,40 @@ class AudioSegment:
         factor = 10 ** (-db / 20)
         new_data = self.data * factor
         return AudioSegment(new_data, self.sample_rate)
+
+    def append_with_crossfade(self, other: 'AudioSegment', crossfade_ms: int) -> 'AudioSegment':
+        """连接音频，并让相邻片段在指定时长内重叠。"""
+        if self.data.size == 0:
+            return other
+        if other.data.size == 0 or crossfade_ms <= 0:
+            return self + other
+        if self.sample_rate != other.sample_rate:
+            other = other._resample(self.sample_rate)
+
+        left = self.data if self.data.ndim > 1 else self.data.reshape(1, -1)
+        right = other.data if other.data.ndim > 1 else other.data.reshape(1, -1)
+        if left.shape[0] != right.shape[0]:
+            left = np.mean(left, axis=0, keepdims=True)
+            right = np.mean(right, axis=0, keepdims=True)
+
+        requested = int(crossfade_ms * self.sample_rate / 1000)
+        overlap = min(requested, left.shape[1] // 2, right.shape[1] // 2)
+        if overlap <= 0:
+            return self + other
+        data = np.concatenate(
+            [left[:, :-overlap], left[:, -overlap:] + right[:, :overlap], right[:, overlap:]],
+            axis=1,
+        )
+        return AudioSegment(data, self.sample_rate)
+
+    def normalize_peak(self, peak: float = 0.95) -> 'AudioSegment':
+        """仅在超过峰值上限时整体衰减，避免混音削波。"""
+        if self.data.size == 0:
+            return self
+        current_peak = float(np.max(np.abs(self.data)))
+        if current_peak <= peak or current_peak == 0:
+            return self
+        return AudioSegment(self.data * (peak / current_peak), self.sample_rate)
     
     def overlay(self, other: 'AudioSegment', position: int = 0) -> 'AudioSegment':
         """
@@ -143,7 +176,7 @@ class AudioSegment:
         output_length = max(self_length, position_samples + other_length)
         
         # 创建输出数组
-        output_data = np.zeros((self_data.shape[0], output_length))
+        output_data = np.zeros((self_data.shape[0], output_length), dtype=np.float32)
         
         # 复制原音频
         output_data[:, :self_length] = self_data

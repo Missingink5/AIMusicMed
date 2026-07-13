@@ -5,7 +5,6 @@
 
 import os
 import random
-import re
 from typing import List, Dict, Optional
 from pathlib import Path
 
@@ -199,20 +198,6 @@ class LocalMusicLibrary:
         
         print(f"🎵 选择本地音乐: {Path(selected_file).name} (情绪: {emotion})")
         return selected_file
-    
-    def get_music_for_user_input(self, user_input: str, duration_seconds: int) -> Optional[str]:
-        """
-        根据用户输入直接获取推荐音乐
-        
-        Args:
-            user_input: 用户倾诉内容
-            duration_seconds: 需要的音乐时长（秒）
-            
-        Returns:
-            Optional[str]: 选中的音乐文件路径
-        """
-        target_emotion = self.analyze_user_emotion(user_input)
-        return self.get_music_for_emotion(target_emotion, duration_seconds)
     
     def get_music_for_emotion_english(self, emotion_en: str, duration_seconds: int) -> Optional[str]:
         """
