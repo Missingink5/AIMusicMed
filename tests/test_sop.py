@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from meditation_sop import build_music_segment_plan, plan_emotion_stages
 from audio_compat import AudioSegment
 import numpy as np
 from py313_meditation_app import MeditationApp, MeditationAppError
+from music_generation_backends import MusicGenerationError
 
 
 def sample_music(segment_id="segment_01", emotion="焦虑"):
@@ -176,7 +178,9 @@ class SopPlanningTests(unittest.TestCase):
             audio=SimpleNamespace(
                 tts_backend="minimax",
                 music_transition_fade_seconds=3.0,
+                minimax_voice_id="test-voice",
             ),
+            api=SimpleNamespace(minimax_api_key="test-key"),
             meditation=SimpleNamespace(
                 default_duration_minutes=5,
                 min_duration_minutes=3,
@@ -223,6 +227,190 @@ class SopPlanningTests(unittest.TestCase):
 
             self.assertEqual(Path(first).name, "5分钟_焦虑-平静-喜悦.wav")
             self.assertEqual(Path(second).name, "5分钟_焦虑-平静-喜悦_2.wav")
+
+    def test_ai_stage_plan_generates_one_track_per_emotion_stage(self):
+        stages = plan_emotion_stages("焦虑", 5, 60)
+
+        plan = MeditationApp._build_ai_stage_plan(stages)
+
+        self.assertEqual(len(plan), 3)
+        self.assertEqual([item["segment_id"] for item in plan], ["stage_01", "stage_02", "stage_03"])
+        self.assertEqual(sum(item["duration_seconds"] for item in plan), 300)
+
+    def test_sensitive_music_context_is_dropped(self):
+        self.assertEqual(
+            MeditationApp._sanitize_music_context("工作压力，联系 13800138000"),
+            "工作压力",
+        )
+        self.assertEqual(
+            MeditationApp._sanitize_music_context("工作压力与未来的不确定感"),
+            "工作压力",
+        )
+        self.assertEqual(MeditationApp._sanitize_music_context("张某在某公司遇到问题"), "")
+
+    def test_music_prompt_retries_then_uses_template(self):
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        app._request_deepseek_json = Mock(side_effect=RuntimeError("offline"))
+        stages = MeditationApp._build_ai_stage_plan(plan_emotion_stages("焦虑", 3, 60))
+
+        prompts = app.generate_ai_music_prompts(
+            stages,
+            {"primary_emotion": "焦虑", "music_context_summary": "工作压力"},
+        )
+
+        self.assertEqual(app._request_deepseek_json.call_count, 2)
+        self.assertEqual(len(prompts), 3)
+        self.assertTrue(all(item["prompt_source"] == "template_fallback" for item in prompts))
+
+    def test_ai_music_recoverable_failure_switches_provider_and_writes_manifest(self):
+        class FakeBackend:
+            def __init__(self, provider, fail=False):
+                self.provider = provider
+                self.fail = fail
+
+            def generate(self, **kwargs):
+                if self.fail:
+                    raise MusicGenerationError(
+                        "timeout", provider=self.provider, recoverable=True
+                    )
+                AudioSegment.silent(1000).export(kwargs["output_path"], format="wav")
+                return {
+                    "path": str(kwargs["output_path"]),
+                    "provider": self.provider,
+                    "model": "test-model",
+                    "request_id": "request-1",
+                    "generation_prompt": kwargs["prompt"],
+                    "negative_prompt": kwargs["negative_prompt"],
+                    "actual_duration_seconds": 1.0,
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = MeditationApp.__new__(MeditationApp)
+            app.logger = Mock()
+            app._session_id = "test-session"
+            app.config = SimpleNamespace(
+                api=SimpleNamespace(
+                    elevenlabs_api_key="key",
+                    minimax_api_key="key",
+                ),
+                audio=SimpleNamespace(music_transition_fade_seconds=0.1),
+            )
+            app._music_backend = lambda provider: FakeBackend(
+                provider, fail=provider == "elevenlabs"
+            )
+            stage = {
+                "segment_id": "stage_01",
+                "stage": 1,
+                "duration_seconds": 60,
+                "emotion_cn": "焦虑",
+                "emotion_en": "Anxiety",
+                "stage_goal": "接纳情绪",
+                "transition_role": "接纳当下",
+            }
+            prompt = {
+                "segment_id": "stage_01",
+                "prompt_en": "calm instrumental",
+                "negative_prompt_en": "vocals",
+                "prompt_source": "deepseek",
+            }
+
+            music = app._generate_ai_music(
+                [stage], [prompt], "elevenlabs", Path(temp_dir), "工作压力"
+            )
+            manifest = json.loads(
+                (Path(temp_dir) / "generation_manifest.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(music[0]["provider"], "minimax")
+            self.assertTrue(music[0]["fallback_used"])
+            self.assertEqual(manifest["anonymous_context"], "工作压力")
+            self.assertEqual(manifest["segments"][0]["provider"], "minimax")
+            self.assertEqual(
+                [item["status"] for item in manifest["segments"][0]["attempts"]],
+                ["failed", "success"],
+            )
+
+    def test_ai_output_file_and_asset_directory_share_collision_suffix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = MeditationApp.__new__(MeditationApp)
+            app.config = SimpleNamespace(paths=SimpleNamespace(base_dir=temp_dir))
+            (Path(temp_dir) / "5分钟_焦虑-平静-喜悦.wav").touch()
+
+            output_path, asset_dir = app._allocate_ai_output_paths(
+                5, "焦虑 → 平静 → 喜悦"
+            )
+
+            self.assertEqual(Path(output_path).name, "5分钟_焦虑-平静-喜悦_2.wav")
+            self.assertEqual(Path(asset_dir).name, "5分钟_焦虑-平静-喜悦_2_素材")
+            self.assertTrue(Path(output_path).is_file())
+            self.assertTrue(Path(asset_dir).is_dir())
+
+    def test_ai_output_reservation_is_removed_when_asset_directory_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = MeditationApp.__new__(MeditationApp)
+            app.config = SimpleNamespace(paths=SimpleNamespace(base_dir=temp_dir))
+
+            with patch.object(Path, "mkdir", side_effect=PermissionError("denied")):
+                with self.assertRaises(PermissionError):
+                    app._allocate_ai_output_paths(5, "焦虑 → 平静 → 喜悦")
+
+            self.assertEqual(list(Path(temp_dir).glob("*.wav")), [])
+
+    def test_ai_partial_failure_preserves_paid_segments_and_marks_manifest_failed(self):
+        class PartialBackend:
+            calls = 0
+
+            def generate(self, **kwargs):
+                self.calls += 1
+                if self.calls == 3:
+                    raise MusicGenerationError(
+                        "service unavailable",
+                        provider="elevenlabs",
+                        recoverable=True,
+                        status_code=503,
+                    )
+                AudioSegment.silent(1000).export(kwargs["output_path"], format="wav")
+                return {
+                    "path": str(kwargs["output_path"]),
+                    "provider": "elevenlabs",
+                    "model": "test-model",
+                    "request_id": f"request-{self.calls}",
+                    "generation_prompt": kwargs["prompt"],
+                    "negative_prompt": kwargs["negative_prompt"],
+                    "actual_duration_seconds": 1.0,
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = MeditationApp.__new__(MeditationApp)
+            app.logger = Mock()
+            app._session_id = "partial-session"
+            app.config = SimpleNamespace(
+                api=SimpleNamespace(
+                    elevenlabs_api_key="key",
+                    minimax_api_key="",
+                ),
+                audio=SimpleNamespace(music_transition_fade_seconds=0.1),
+            )
+            backend = PartialBackend()
+            app._music_backend = lambda *_: backend
+            stages = MeditationApp._build_ai_stage_plan(
+                plan_emotion_stages("焦虑", 3, 60)
+            )
+            prompts = MeditationApp._template_ai_music_prompts(stages)
+
+            with self.assertRaisesRegex(MeditationAppError, "stage_03"):
+                app._generate_ai_music(
+                    stages, prompts, "elevenlabs", Path(temp_dir), "匿名主题"
+                )
+
+            manifest = json.loads(
+                (Path(temp_dir) / "generation_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["status"], "failed")
+            self.assertEqual(manifest["failed_segment_id"], "stage_03")
+            self.assertEqual(len(manifest["segments"]), 2)
+            self.assertEqual(len(list(Path(temp_dir).glob("阶段*.wav"))), 2)
 
 
 if __name__ == "__main__":

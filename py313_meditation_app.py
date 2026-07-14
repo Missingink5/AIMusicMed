@@ -26,6 +26,10 @@ from config_manager import load_config, AppConfig
 from local_music_library import LocalMusicLibrary
 from minimax_tts_backend import generate_minimax_batch, MiniMaxTTSError
 from meditation_sop import EMOTION_EN, build_music_segment_plan, plan_emotion_stages
+from music_generation_backends import (
+    MusicGenerationError,
+    create_music_backend,
+)
 
 
 for _stream in (sys.stdout, sys.stderr):
@@ -117,7 +121,9 @@ class MeditationApp:
         try:
             result = self._request_deepseek_json(
                 "你是情绪识别助手。只能从忧郁、焦虑、敌意、平静、喜悦、自豪、友爱中选择主要情绪。"
-                "不要做临床诊断。返回JSON字段 primary_emotion、confidence、secondary_emotions、rationale。",
+                "不要做临床诊断。music_context_summary只能从工作压力、学习压力、人际关系、睡眠困扰、"
+                "生活变化、自我评价、未来不确定、一般情绪调节中选择一项或多项，不得输出自由文本。"
+                "返回JSON字段 primary_emotion、confidence、secondary_emotions、rationale、music_context_summary。",
                 f"用户表达：{user_input}",
                 500,
             )
@@ -130,6 +136,9 @@ class MeditationApp:
                 "confidence": max(0.0, min(1.0, float(result.get("confidence", 0.5)))),
                 "secondary_emotions": secondary,
                 "rationale": str(result.get("rationale", ""))[:300],
+                "music_context_summary": self._sanitize_music_context(
+                    result.get("music_context_summary", "")
+                ),
                 "source": "ai",
             }
             print(f"🤖 AI情绪识别: {primary} (置信度 {analysis['confidence']:.0%})")
@@ -143,8 +152,132 @@ class MeditationApp:
                 "confidence": 0.0,
                 "secondary_emotions": [],
                 "rationale": "AI不可用，使用本地关键词规则",
+                "music_context_summary": "",
                 "source": "keyword_fallback",
             }
+
+    @staticmethod
+    def _sanitize_music_context(value: object) -> str:
+        """只保留封闭主题词，确保匿名摘要不携带自由文本身份信息。"""
+        text = re.sub(r"\s+", " ", str(value or "")).strip()[:160]
+        allowed_themes = (
+            "工作压力",
+            "学习压力",
+            "人际关系",
+            "睡眠困扰",
+            "生活变化",
+            "自我评价",
+            "未来不确定",
+            "一般情绪调节",
+        )
+        return "、".join(theme for theme in allowed_themes if theme in text)
+
+    @staticmethod
+    def _build_ai_stage_plan(stages: List[Dict]) -> List[Dict]:
+        """AI音乐每个情绪阶段只生成一首完整音乐。"""
+        plan = []
+        for stage in stages:
+            role = "接纳当下" if stage["stage"] == 1 else "平稳过渡" if stage["stage"] == 2 else "积极巩固"
+            plan.append(
+                {
+                    "segment_id": f"stage_{stage['stage']:02d}",
+                    "stage": stage["stage"],
+                    "stage_position": 1,
+                    "stage_track_count": 1,
+                    "duration_seconds": stage["duration"],
+                    "emotion_cn": stage["emotion_cn"],
+                    "emotion_en": stage["emotion_en"],
+                    "stage_goal": stage["description"],
+                    "transition_role": role,
+                }
+            )
+        return plan
+
+    @staticmethod
+    def _template_ai_music_prompts(stage_plan: List[Dict]) -> List[Dict]:
+        prompts = []
+        for stage in stage_plan:
+            prompts.append(
+                {
+                    "segment_id": stage["segment_id"],
+                    "emotion": stage["emotion_cn"],
+                    "target_duration_seconds": stage["duration_seconds"],
+                    "prompt_en": (
+                        f"Instrumental meditation music expressing {stage['emotion_en']}; "
+                        f"support {stage['stage_goal']} and {stage['transition_role']}; slow tempo, "
+                        "gentle dynamics, warm sustained textures, smooth development, and a soft ending."
+                    ),
+                    "negative_prompt_en": (
+                        "vocals, lyrics, spoken words, artist names, song titles, abrupt transitions, "
+                        "harsh percussion, sudden loud peaks"
+                    ),
+                    "prompt_source": "template_fallback",
+                }
+            )
+        return prompts
+
+    def generate_ai_music_prompts(self, stage_plan: List[Dict], emotion_analysis: Dict) -> List[Dict]:
+        """让DeepSeek为锁定的阶段计划写提示词；失败一次重试后使用模板。"""
+        request_data = {
+            "anonymous_context": emotion_analysis.get("music_context_summary", ""),
+            "primary_emotion": emotion_analysis["primary_emotion"],
+            "segments": [
+                {
+                    "segment_id": item["segment_id"],
+                    "emotion": item["emotion_cn"],
+                    "target_duration_seconds": item["duration_seconds"],
+                    "stage_goal": item["stage_goal"],
+                    "transition_role": item["transition_role"],
+                }
+                for item in stage_plan
+            ],
+        }
+        last_error = None
+        for attempt in range(2):
+            try:
+                result = self._request_deepseek_json(
+                    "你是冥想音乐制作提示词专家。只根据匿名主题和已锁定的阶段计划，为每段写英文音乐提示词。"
+                    "不得改变segment_id、emotion或target_duration_seconds。提示词必须是纯音乐、无歌词，包含情绪、"
+                    "冥想用途、速度、乐器质感、能量轨迹、阶段衔接和柔和结尾；不得使用艺术家名或歌曲名。"
+                    "返回JSON对象segments，每项含segment_id、emotion、target_duration_seconds、prompt_en、negative_prompt_en。",
+                    json.dumps(request_data, ensure_ascii=False),
+                    1800,
+                )
+                returned = result.get("segments")
+                if not isinstance(returned, list) or len(returned) != len(stage_plan):
+                    raise ValueError("AI音乐提示词数量与阶段数量不一致")
+                expected = {item["segment_id"]: item for item in stage_plan}
+                returned_ids = [item.get("segment_id") for item in returned]
+                if len(set(returned_ids)) != len(returned_ids) or set(returned_ids) != set(expected):
+                    raise ValueError("AI音乐提示词阶段ID重复、缺失或多余")
+                validated = []
+                for item in returned:
+                    stage = expected[item["segment_id"]]
+                    if item.get("emotion") != stage["emotion_cn"]:
+                        raise ValueError(f"AI修改了阶段情绪: {stage['segment_id']}")
+                    if float(item.get("target_duration_seconds", -1)) != float(stage["duration_seconds"]):
+                        raise ValueError(f"AI修改了阶段时长: {stage['segment_id']}")
+                    prompt = str(item.get("prompt_en", "")).strip()
+                    if not prompt:
+                        raise ValueError(f"AI返回空音乐提示词: {stage['segment_id']}")
+                    validated.append(
+                        {
+                            "segment_id": stage["segment_id"],
+                            "emotion": stage["emotion_cn"],
+                            "target_duration_seconds": stage["duration_seconds"],
+                            "prompt_en": prompt,
+                            "negative_prompt_en": str(item.get("negative_prompt_en", "")).strip(),
+                            "prompt_source": "deepseek",
+                        }
+                    )
+                order = {item["segment_id"]: index for index, item in enumerate(stage_plan)}
+                validated.sort(key=lambda item: order[item["segment_id"]])
+                return validated
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning("DeepSeek音乐提示词第%s次生成失败: %s", attempt + 1, exc)
+        print(f"⚠️ DeepSeek音乐提示词生成失败，使用匿名本地模板: {last_error}")
+        return self._template_ai_music_prompts(stage_plan)
 
     def prepare_session_plan(self, user_input: str, duration_minutes: int) -> Dict:
         """AI emotion -> emotion stages -> duration-based music segment plan."""
@@ -189,6 +322,17 @@ class MeditationApp:
                 "render_duration_seconds": music["duration_seconds"],
                 "music_features": music["music_features"],
             }
+            if music.get("music_source") == "ai":
+                item.update(
+                    {
+                        "music_source": "ai",
+                        "provider": music["provider"],
+                        "model": music.get("model"),
+                        "generation_prompt": music.get("generation_prompt", ""),
+                        "prompt_source": music.get("prompt_source"),
+                        "target_duration_seconds": music.get("target_duration_seconds"),
+                    }
+                )
             canonical = json.dumps(item, ensure_ascii=False, sort_keys=True)
             item["grounding_fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
             manifest.append(item)
@@ -449,15 +593,38 @@ class MeditationApp:
             clipped = clipped[:boundary + 1]
         return clipped or text[:1]
 
-    def generate_music(self, music_prompts: List[Dict], emotion_journey: List[Dict] = None) -> List[Dict]:
-        """按正式 SOP 从本地曲库选择整首音乐并提取内容特征。"""
+    def generate_music(
+        self,
+        music_prompts: List[Dict],
+        emotion_journey: List[Dict] = None,
+        music_source: str = "library",
+        ai_music_provider: Optional[str] = None,
+        ai_prompt_specs: Optional[List[Dict]] = None,
+        asset_dir: Optional[str] = None,
+        anonymous_context: str = "",
+    ) -> List[Dict]:
+        """按所选来源生成统一结构的音乐信息。"""
         self.logger.info("开始智能音乐生成")
         if not music_prompts or not all(
             isinstance(prompt, dict) and prompt.get("segment_id") for prompt in music_prompts
         ):
             raise MeditationAppError("音乐计划必须包含有效的 segment_id")
-        print("🎭 使用正式整曲情绪转换音乐系统...")
-        return self._generate_planned_music(music_prompts)
+        if music_source == "library":
+            print("🎭 使用正式整曲情绪转换音乐系统...")
+            return self._generate_planned_music(music_prompts)
+        if music_source != "ai":
+            raise MeditationAppError(f"不支持的音乐来源: {music_source}")
+        if ai_music_provider not in {"elevenlabs", "minimax"}:
+            raise MeditationAppError(f"不支持的AI音乐后端: {ai_music_provider}")
+        if not ai_prompt_specs or not asset_dir:
+            raise MeditationAppError("AI音乐模式缺少提示词或素材目录")
+        return self._generate_ai_music(
+            music_prompts,
+            ai_prompt_specs,
+            ai_music_provider,
+            Path(asset_dir),
+            anonymous_context,
+        )
     
 
     @staticmethod
@@ -584,6 +751,12 @@ class MeditationApp:
                 "source_duration_seconds": round(source_duration, 2),
                 "filename_tags": self._music_filename_tags(source_file),
                 "music_features": features,
+                "music_source": "library",
+                "provider": "local_library",
+                "model": None,
+                "generation_prompt": "",
+                "prompt_source": None,
+                "target_duration_seconds": segment["duration_seconds"],
             }
             music_files.append(info)
             print(
@@ -596,17 +769,217 @@ class MeditationApp:
         print(f"✅ 音乐计划完成：{len(music_files)} 首，共 {total_duration:.1f} 秒")
         return music_files
 
+    def _music_backend(self, provider: str):
+        api = self.config.api
+        if provider == "elevenlabs":
+            return create_music_backend(
+                provider,
+                api_key=api.elevenlabs_api_key,
+                base_url=api.elevenlabs_music_base_url,
+                model=api.elevenlabs_music_model,
+                timeout_seconds=api.music_request_timeout_seconds,
+            )
+        return create_music_backend(
+            provider,
+            api_key=api.minimax_api_key,
+            base_url=api.minimax_music_base_url,
+            model=api.minimax_music_model,
+            timeout_seconds=api.music_request_timeout_seconds,
+        )
+
+    def _provider_is_configured(self, provider: str) -> bool:
+        if provider == "elevenlabs":
+            return bool(self.config.api.elevenlabs_api_key)
+        if provider == "minimax":
+            return bool(self.config.api.minimax_api_key)
+        return False
+
+    @staticmethod
+    def _write_generation_manifest(asset_dir: Path, manifest: Dict) -> None:
+        path = asset_dir / "generation_manifest.json"
+        temporary = asset_dir / ".generation_manifest.json.tmp"
+        temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
+    def _generate_ai_music(
+        self,
+        stage_plan: List[Dict],
+        prompt_specs: List[Dict],
+        primary_provider: str,
+        asset_dir: Path,
+        anonymous_context: str = "",
+    ) -> List[Dict]:
+        """串行生成三阶段AI音乐；仅可恢复错误切换一次备用后端。"""
+        prompt_by_id = {item["segment_id"]: item for item in prompt_specs}
+        if set(prompt_by_id) != {item["segment_id"] for item in stage_plan}:
+            raise MeditationAppError("AI音乐提示词与阶段计划无法一一对应")
+        fallback_provider = "minimax" if primary_provider == "elevenlabs" else "elevenlabs"
+        manifest = {
+            "status": "generating",
+            "session_id": self._session_id,
+            "primary_provider": primary_provider,
+            "fallback_provider": fallback_provider,
+            "anonymous_context": anonymous_context,
+            "segments": [],
+        }
+        self._write_generation_manifest(asset_dir, manifest)
+        music_files = []
+
+        for index, stage in enumerate(stage_plan, start=1):
+            prompt_spec = prompt_by_id[stage["segment_id"]]
+            generated = None
+            errors = []
+            attempts = []
+            providers = [primary_provider]
+            if self._provider_is_configured(fallback_provider):
+                providers.append(fallback_provider)
+            for provider_index, provider in enumerate(providers):
+                output_path = asset_dir / f"阶段{index:02d}_{stage['emotion_cn']}_{provider}.wav"
+                try:
+                    generated = self._music_backend(provider).generate(
+                        prompt=prompt_spec["prompt_en"],
+                        negative_prompt=prompt_spec.get("negative_prompt_en", ""),
+                        target_duration_seconds=stage["duration_seconds"],
+                        output_path=output_path,
+                    )
+                    generated["fallback_used"] = provider_index > 0
+                    attempts.append(
+                        {
+                            "provider": provider,
+                            "status": "success",
+                            "request_id": generated.get("request_id"),
+                        }
+                    )
+                    break
+                except MusicGenerationError as exc:
+                    error_entry = {
+                        "provider": provider,
+                        "status": "failed",
+                        "error": str(exc),
+                        "recoverable": exc.recoverable,
+                        "status_code": exc.status_code,
+                    }
+                    errors.append(error_entry)
+                    attempts.append(error_entry)
+                    if not exc.recoverable or provider_index == len(providers) - 1:
+                        manifest.update(
+                            {
+                                "status": "failed",
+                                "failed_segment_id": stage["segment_id"],
+                                "errors": errors,
+                            }
+                        )
+                        self._write_generation_manifest(asset_dir, manifest)
+                        fallback_note = (
+                            f"；备用后端 {fallback_provider} 未配置密钥"
+                            if exc.recoverable and len(providers) == 1
+                            else ""
+                        )
+                        raise MeditationAppError(
+                            f"AI音乐阶段 {stage['segment_id']} 生成失败: {exc}{fallback_note}"
+                        ) from exc
+                    print(f"⚠️ {provider} 生成失败，切换到 {fallback_provider}: {exc}")
+
+            if generated is None:
+                raise MeditationAppError(f"AI音乐阶段 {stage['segment_id']} 未返回结果")
+            audio = AudioSegment.from_file(generated["path"])
+            features = self._analyze_music_content(audio)
+            rendered = self._apply_music_fades(
+                audio, self.config.audio.music_transition_fade_seconds
+            )
+            rendered.export(generated["path"], format="wav")
+            actual_duration = len(rendered) / 1000
+            source_file = Path(generated["path"]).name
+            info = {
+                **stage,
+                "path": generated["path"],
+                "planned_duration_seconds": stage["duration_seconds"],
+                "duration_seconds": round(actual_duration, 3),
+                "emotion": stage["emotion_cn"],
+                "source_file": source_file,
+                "source_duration_seconds": round(actual_duration, 2),
+                "filename_tags": [stage["emotion_cn"], "AI生成", generated["provider"]],
+                "music_features": features,
+                "music_source": "ai",
+                "provider": generated["provider"],
+                "model": generated["model"],
+                "request_id": generated.get("request_id"),
+                "generation_prompt": generated["generation_prompt"],
+                "negative_prompt": generated.get("negative_prompt", ""),
+                "prompt_source": prompt_spec["prompt_source"],
+                "target_duration_seconds": stage["duration_seconds"],
+                "fallback_used": generated["fallback_used"],
+            }
+            music_files.append(info)
+            manifest["segments"].append(
+                {
+                    "segment_id": stage["segment_id"],
+                    "emotion": stage["emotion_cn"],
+                    "stage_goal": stage["stage_goal"],
+                    "transition_role": stage["transition_role"],
+                    "target_duration_seconds": stage["duration_seconds"],
+                    "actual_duration_seconds": round(actual_duration, 3),
+                    "provider": generated["provider"],
+                    "model": generated["model"],
+                    "request_id": generated.get("request_id"),
+                    "prompt": prompt_spec["prompt_en"],
+                    "negative_prompt": prompt_spec.get("negative_prompt_en", ""),
+                    "prompt_source": prompt_spec["prompt_source"],
+                    "fallback_used": generated["fallback_used"],
+                    "attempts": attempts,
+                    "file": source_file,
+                }
+            )
+            self._write_generation_manifest(asset_dir, manifest)
+            print(
+                f"  ✓ {stage['segment_id']} {stage['emotion_cn']} {actual_duration:.1f}秒: "
+                f"{generated['provider']}"
+            )
+        return music_files
+
     def _build_output_path(self, duration_minutes: int, emotion_journey: str) -> str:
         """按目标时长和情绪轨迹生成不覆盖已有文件的输出路径。"""
         safe_journey = re.sub(r'[<>:"/\\|?*]', "-", emotion_journey)
         safe_journey = re.sub(r"\s*→\s*", "-", safe_journey).strip(" .-")
         base_name = f"{duration_minutes}分钟_{safe_journey}"
-        output_path = Path(self.config.paths.base_dir) / f"{base_name}.wav"
         suffix = 2
-        while output_path.exists():
-            output_path = Path(self.config.paths.base_dir) / f"{base_name}_{suffix}.wav"
-            suffix += 1
-        return str(output_path)
+        output_path = Path(self.config.paths.base_dir) / f"{base_name}.wav"
+        while True:
+            try:
+                with output_path.open("xb"):
+                    pass
+                return str(output_path)
+            except FileExistsError:
+                output_path = Path(self.config.paths.base_dir) / f"{base_name}_{suffix}.wav"
+                suffix += 1
+
+    def _allocate_ai_output_paths(
+        self, duration_minutes: int, emotion_journey: str
+    ) -> Tuple[str, str]:
+        """为AI成品和阶段素材目录分配同一不冲突序号。"""
+        safe_journey = re.sub(r'[<>:"/\\|?*]', "-", emotion_journey)
+        safe_journey = re.sub(r"\s*→\s*", "-", safe_journey).strip(" .-")
+        base_name = f"{duration_minutes}分钟_{safe_journey}"
+        suffix = 1
+        while True:
+            numbered = base_name if suffix == 1 else f"{base_name}_{suffix}"
+            output_path = Path(self.config.paths.base_dir) / f"{numbered}.wav"
+            asset_dir = Path(self.config.paths.base_dir) / f"{numbered}_素材"
+            try:
+                with output_path.open("xb"):
+                    pass
+            except FileExistsError:
+                suffix += 1
+                continue
+            try:
+                asset_dir.mkdir(parents=True)
+                return str(output_path), str(asset_dir)
+            except FileExistsError:
+                output_path.unlink(missing_ok=True)
+                suffix += 1
+            except Exception:
+                output_path.unlink(missing_ok=True)
+                raise
 
     def combine_audio_adaptive(
         self,
@@ -614,6 +987,7 @@ class MeditationApp:
         music_info: List[Dict],
         duration_minutes: int,
         emotion_journey: str,
+        output_path: Optional[str] = None,
     ) -> str:
         """基于音乐实际时长的自适应音频合成"""
         self.logger.info("开始自适应音频合成")
@@ -666,9 +1040,13 @@ class MeditationApp:
                 raise MeditationAppError(f"片段 {i+1} 合成失败: {e}") from e
         
         # 导出最终音频
-        output_path = self._build_output_path(duration_minutes, emotion_journey)
-        final_audio = final_audio.normalize_peak(0.95)
-        final_audio.export(output_path, format="wav")  # 使用WAV格式确保兼容性
+        output_path = output_path or self._build_output_path(duration_minutes, emotion_journey)
+        try:
+            final_audio = final_audio.normalize_peak(0.95)
+            final_audio.export(output_path, format="wav")  # 使用WAV格式确保兼容性
+        except Exception:
+            Path(output_path).unlink(missing_ok=True)
+            raise
         
         # 计算并报告实际时长
         actual_duration_seconds = len(final_audio) / 1000
@@ -701,20 +1079,31 @@ class MeditationApp:
             self.logger.info("临时文件清理完成")
             print("✅ 临时文件清理完成")
 
-    def get_session_info(self, user_input: str, duration_minutes: int) -> Dict:
+    def get_session_info(
+        self,
+        user_input: str,
+        duration_minutes: int,
+        music_source: str = "library",
+        ai_music_provider: Optional[str] = None,
+    ) -> Dict:
         """获取会话信息摘要"""
         total_seconds = duration_minutes * 60
-        segments = max(3, round(total_seconds / self.config.audio.preferred_track_duration_seconds))
+        segments = (
+            3
+            if music_source == "ai"
+            else max(3, round(total_seconds / self.config.audio.preferred_track_duration_seconds))
+        )
         
         return {
-            "user_input": user_input,
+            "user_input_characters": len(user_input),
             "duration_minutes": duration_minutes,
             "segments_count": segments,
             "preferred_track_duration_seconds": self.config.audio.preferred_track_duration_seconds,
             "total_duration_seconds": total_seconds,
             "device": self.device,
             "tts_backend": self.config.audio.tts_backend,
-            "music_source": "local_library",
+            "music_source": "local_library" if music_source == "library" else "ai",
+            "ai_music_provider": ai_music_provider,
             "python_version": "3.13 兼容版",
             "audio_backend": "librosa + soundfile"
         }
@@ -723,7 +1112,9 @@ class MeditationApp:
         self, 
         user_input: str, 
         duration_minutes: int = None, 
-        cleanup: bool = True
+        cleanup: bool = True,
+        music_source: str = "library",
+        ai_music_provider: Optional[str] = None,
     ) -> Tuple[str, Dict]:
         """
         创建完整的冥想会话
@@ -743,14 +1134,29 @@ class MeditationApp:
                 f"冥想时长必须在 {self.config.meditation.min_duration_minutes} 到 "
                 f"{self.config.meditation.max_duration_minutes} 分钟之间"
             )
+        if music_source not in {"library", "ai"}:
+            raise MeditationAppError(f"不支持的音乐来源: {music_source}")
+        if not self.config.api.minimax_api_key:
+            raise MeditationAppError("未配置 MiniMax TTS 密钥: MINIMAX_API_KEY")
+        if not str(self.config.audio.minimax_voice_id).strip():
+            raise MeditationAppError("未配置 MiniMax TTS 音色: minimax_voice_id")
+        if music_source == "ai" and ai_music_provider not in {"elevenlabs", "minimax"}:
+            raise MeditationAppError("AI音乐模式必须选择 elevenlabs 或 minimax")
+        if music_source == "ai" and not self._provider_is_configured(ai_music_provider):
+            key_name = "ELEVENLABS_API_KEY" if ai_music_provider == "elevenlabs" else "MINIMAX_API_KEY"
+            raise MeditationAppError(f"未配置所选AI音乐后端密钥: {key_name}")
         self._session_id = uuid.uuid4().hex[:12]
         
-        session_info = self.get_session_info(user_input, duration_minutes)
+        session_info = self.get_session_info(
+            user_input, duration_minutes, music_source, ai_music_provider
+        )
         
         self.logger.info(f"开始创建冥想会话: {session_info}")
         print(f"🧘‍♀️ 开始创建 {duration_minutes} 分钟的冥想会话...")
         print(f"用户倾诉: {user_input}")
-        
+        asset_dir = None
+        final_output_path = None
+
         try:
             # 1. AI识别情绪，并按阶段时长规划音乐数量
             prompts_data = self.prepare_session_plan(user_input, duration_minutes)
@@ -770,12 +1176,32 @@ class MeditationApp:
                 print(f"🎭 情绪转换计划: {prompts_data['emotion_journey']}")
                 session_info["emotion_journey"] = prompts_data["emotion_journey"]
             
-            # 2. 先选择具体音乐并提取音乐内容特征
+            # 2. 先选择或生成具体音乐并提取音乐内容特征
             print("🎵 开始按情绪路径选择并分析音乐...")
-            
-            # 传递情绪转换计划到音乐生成
             emotion_journey = prompts_data.get('emotion_journey_plan', [])
-            music_info = self.generate_music(prompts_data["music_prompts"], emotion_journey)
+            if music_source == "ai":
+                stage_plan = self._build_ai_stage_plan(emotion_journey)
+                ai_prompt_specs = self.generate_ai_music_prompts(
+                    stage_plan, prompts_data["emotion_analysis"]
+                )
+                final_output_path, asset_dir = self._allocate_ai_output_paths(
+                    duration_minutes, prompts_data["emotion_journey"]
+                )
+                music_info = self.generate_music(
+                    stage_plan,
+                    emotion_journey,
+                    music_source="ai",
+                    ai_music_provider=ai_music_provider,
+                    ai_prompt_specs=ai_prompt_specs,
+                    asset_dir=asset_dir,
+                    anonymous_context=prompts_data["emotion_analysis"].get(
+                        "music_context_summary", ""
+                    ),
+                )
+            else:
+                music_info = self.generate_music(
+                    prompts_data["music_prompts"], emotion_journey
+                )
 
             # 3. 根据已选音乐的情绪、内容特征和时长生成逐段引导词
             print("📝 开始生成与具体音乐对齐的引导词...")
@@ -791,12 +1217,21 @@ class MeditationApp:
             
             # 5. 自适应音频合成
             print("🎧 开始自适应音频合成...")
-            final_audio_path = self.combine_audio_adaptive(
-                speech_files,
-                music_info,
-                duration_minutes,
-                prompts_data["emotion_journey"],
-            )
+            if final_output_path:
+                final_audio_path = self.combine_audio_adaptive(
+                    speech_files,
+                    music_info,
+                    duration_minutes,
+                    prompts_data["emotion_journey"],
+                    output_path=final_output_path,
+                )
+            else:
+                final_audio_path = self.combine_audio_adaptive(
+                    speech_files,
+                    music_info,
+                    duration_minutes,
+                    prompts_data["emotion_journey"],
+                )
             transition_overlap = self.config.audio.music_transition_fade_seconds * max(
                 0, len(music_info) - 1
             )
@@ -820,6 +1255,19 @@ class MeditationApp:
                 ),
                 "success": True
             })
+            if asset_dir:
+                manifest_path = Path(asset_dir) / "generation_manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest.update(
+                    {
+                        "status": "complete",
+                        "final_output": Path(final_audio_path).name,
+                        "actual_duration_seconds": round(actual_duration_seconds, 3),
+                        "guidance_sources": session_info["guidance_sources"],
+                    }
+                )
+                self._write_generation_manifest(Path(asset_dir), manifest)
+                session_info["asset_dir"] = asset_dir
             
             self.logger.info("冥想会话创建完成")
             print(f"\n🎉 冥想会话创建完成!")
@@ -830,6 +1278,17 @@ class MeditationApp:
         except Exception as e:
             error_msg = f"创建冥想会话失败: {e}"
             self.logger.error(error_msg)
+            if asset_dir:
+                manifest_path = Path(asset_dir) / "generation_manifest.json"
+                if manifest_path.exists():
+                    try:
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        manifest.update({"status": "failed", "session_error": str(e)})
+                        self._write_generation_manifest(Path(asset_dir), manifest)
+                    except Exception as manifest_exc:
+                        self.logger.error("AI音乐失败manifest更新失败: %s", manifest_exc)
+            if final_output_path:
+                Path(final_output_path).unlink(missing_ok=True)
             
             session_info.update({
                 "error": str(e),

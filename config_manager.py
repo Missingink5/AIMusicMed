@@ -22,6 +22,12 @@ class APIConfig:
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     minimax_api_key: str = ""
     minimax_base_url: str = "https://api.minimaxi.com"
+    elevenlabs_api_key: str = ""
+    elevenlabs_music_base_url: str = "https://api.elevenlabs.io/v1"
+    elevenlabs_music_model: str = "music_v2"
+    minimax_music_base_url: str = "https://api.minimaxi.com/v1"
+    minimax_music_model: str = "music-2.6"
+    music_request_timeout_seconds: int = 600
     
     def __post_init__(self):
         minimax_env_key = os.getenv("MINIMAX_API_KEY")
@@ -29,6 +35,29 @@ class APIConfig:
             self.minimax_api_key = minimax_env_key
         elif self.minimax_api_key in ("", "PUT_YOUR_KEY_OR_USE_ENV"):
             self.minimax_api_key = ""
+        elevenlabs_env_key = os.getenv("ELEVENLABS_API_KEY")
+        if elevenlabs_env_key:
+            self.elevenlabs_api_key = elevenlabs_env_key
+        elif self.elevenlabs_api_key in ("", "PUT_YOUR_KEY_OR_USE_ENV"):
+            self.elevenlabs_api_key = ""
+
+        self.elevenlabs_music_base_url = os.getenv(
+            "ELEVENLABS_MUSIC_BASE_URL", self.elevenlabs_music_base_url
+        )
+        self.elevenlabs_music_model = os.getenv(
+            "ELEVENLABS_MUSIC_MODEL", self.elevenlabs_music_model
+        )
+        self.minimax_music_base_url = os.getenv(
+            "MINIMAX_MUSIC_BASE_URL", self.minimax_music_base_url
+        )
+        self.minimax_music_model = os.getenv(
+            "MINIMAX_MUSIC_MODEL", self.minimax_music_model
+        )
+        timeout = os.getenv("MUSIC_REQUEST_TIMEOUT_SECONDS")
+        if timeout:
+            self.music_request_timeout_seconds = int(timeout)
+        if self.music_request_timeout_seconds <= 0:
+            raise ValueError("music_request_timeout_seconds 必须大于 0")
         """优先使用环境变量，避免在配置文件中保存密钥。"""
         env_key = os.getenv("DEEPSEEK_API_KEY")
         if env_key:
@@ -213,12 +242,17 @@ class AppConfig:
         """从环境变量加载配置"""
         deepseek_key = os.getenv('DEEPSEEK_API_KEY', '')
         minimax_key = os.getenv('MINIMAX_API_KEY', '')
-        if not deepseek_key and not minimax_key:
-            raise ValueError("DEEPSEEK_API_KEY or MINIMAX_API_KEY environment variable not set")
+        elevenlabs_key = os.getenv('ELEVENLABS_API_KEY', '')
+        if not deepseek_key and not minimax_key and not elevenlabs_key:
+            raise ValueError(
+                "DEEPSEEK_API_KEY, MINIMAX_API_KEY or ELEVENLABS_API_KEY "
+                "environment variable not set"
+            )
 
         api_config = APIConfig(
             deepseek_api_key=deepseek_key,
             minimax_api_key=minimax_key,
+            elevenlabs_api_key=elevenlabs_key,
         )
         paths_config = PathConfig()
         audio_config = AudioConfig()
@@ -236,6 +270,7 @@ class AppConfig:
         api_data = asdict(self.api)
         api_data['deepseek_api_key'] = 'PUT_YOUR_KEY_OR_USE_ENV'
         api_data['minimax_api_key'] = 'PUT_YOUR_KEY_OR_USE_ENV'
+        api_data['elevenlabs_api_key'] = 'PUT_YOUR_KEY_OR_USE_ENV'
         data = {
             'api_keys': api_data,
             'paths': asdict(self.paths),
@@ -291,7 +326,10 @@ def create_default_config(output_path: str = "config.json"):
     
     default_config.to_json(output_path)
     print(f"[OK] Default config file created: {output_path}")
-    print("请通过 DEEPSEEK_API_KEY / MINIMAX_API_KEY 环境变量提供密钥")
+    print(
+        "请通过 DEEPSEEK_API_KEY / MINIMAX_API_KEY / ELEVENLABS_API_KEY "
+        "环境变量提供密钥"
+    )
 
 
 if __name__ == "__main__":
@@ -301,6 +339,7 @@ if __name__ == "__main__":
         print("[OK] Configuration loaded successfully")
         print(f"DeepSeek configured: {bool(config.api.deepseek_api_key)}")
         print(f"MiniMax configured: {bool(config.api.minimax_api_key)}")
+        print(f"ElevenLabs configured: {bool(config.api.elevenlabs_api_key)}")
         print(f"Base Dir: {config.paths.base_dir}")
         print(f"TTS Voice: {config.audio.minimax_voice_id}")
     except Exception as e:

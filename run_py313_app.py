@@ -112,16 +112,91 @@ def get_duration(config):
             return None
 
 
-def print_session_summary(user_input: str, duration: int, config):
+def get_music_source():
+    """选择音乐来源；空输入保持原有曲库流程。"""
+    print("\n🎵 请选择音乐来源：")
+    print("1. 本地曲库（默认）")
+    print("2. AI 生成音乐")
+    while True:
+        try:
+            choice = input("请输入选择 (1-2，默认1): ").strip().lower()
+            if choice in ("", "1", "library"):
+                return "library"
+            if choice in ("2", "ai"):
+                return "ai"
+            print("请输入有效的选择 (1-2)")
+        except KeyboardInterrupt:
+            print("\n\n👋 已取消")
+            return None
+
+
+def get_ai_music_provider(config):
+    """选择 AI 音乐主后端，并在调用付费 API 前验证主后端密钥。"""
+    providers = (
+        ("elevenlabs", "ElevenLabs Music", config.api.elevenlabs_api_key),
+        ("minimax", "MiniMax Music 2.6", config.api.minimax_api_key),
+    )
+    print("\n🤖 请选择 AI 音乐主后端：")
+    for index, (_, label, api_key) in enumerate(providers, 1):
+        status = "已配置" if api_key else "未配置密钥"
+        print(f"{index}. {label} [{status}]")
+
+    while True:
+        try:
+            choice = input("请输入选择 (1-2): ").strip().lower()
+            aliases = {"1": 0, "elevenlabs": 0, "2": 1, "minimax": 1}
+            if choice not in aliases:
+                print("请输入有效的选择 (1-2)")
+                continue
+            provider, label, api_key = providers[aliases[choice]]
+            if not api_key:
+                env_name = (
+                    "ELEVENLABS_API_KEY" if provider == "elevenlabs" else "MINIMAX_API_KEY"
+                )
+                print(f"❌ {label} 未配置，请先设置环境变量 {env_name}")
+                return None
+            return provider
+        except KeyboardInterrupt:
+            print("\n\n👋 已取消")
+            return None
+
+
+def print_session_summary(
+    user_input: str,
+    duration: int,
+    config,
+    music_source: str = "library",
+    ai_music_provider: str = None,
+):
     """打印会话摘要"""
-    segments = max(3, round(duration * 60 / config.audio.preferred_track_duration_seconds))
+    segments = (
+        3
+        if music_source == "ai"
+        else max(3, round(duration * 60 / config.audio.preferred_track_duration_seconds))
+    )
     
     print(f"\n📋 会话设置摘要:")
     print(f"   💭 您的倾诉: {user_input}")
     print(f"   ⏰ 冥想时长: {duration} 分钟")
-    print(f"   📊 音频片段: 约 {segments} 首音乐 (每首约 {config.audio.preferred_track_duration_seconds} 秒)")
+    if music_source == "ai":
+        print(f"   📊 音频片段: {segments} 个情绪阶段（每阶段生成一首）")
+    else:
+        print(
+            f"   📊 音频片段: 约 {segments} 首音乐 "
+            f"(每首约 {config.audio.preferred_track_duration_seconds} 秒)"
+        )
     print(f"   🗣️ 语音合成: {config.audio.tts_backend}")
-    print("   🎵 音乐来源: 本地正式曲库（整首播放）")
+    if music_source == "ai":
+        provider_label = {
+            "elevenlabs": "ElevenLabs Music",
+            "minimax": "MiniMax Music 2.6",
+        }[ai_music_provider]
+        print(f"   🎵 音乐来源: AI 生成（{provider_label}，三个情绪阶段）")
+        if ai_music_provider == "minimax":
+            print("   ⏱️ MiniMax 不提供精确时长参数，将保留完整生成音乐并报告实际时长")
+        print("   ⚠️ 可恢复故障会调用另一 AI 后端一次，极端情况下可能产生两次生成费用")
+    else:
+        print("   🎵 音乐来源: 本地正式曲库（整首播放）")
     print()
 
 
@@ -187,9 +262,30 @@ async def run_session():
         duration = get_duration(config)
         if duration is None:
             return
+
+        music_source = get_music_source()
+        if music_source is None:
+            return
+        ai_music_provider = None
+        if music_source == "ai":
+            ai_music_provider = get_ai_music_provider(config)
+            if ai_music_provider is None:
+                return
+        if not config.api.minimax_api_key:
+            print("❌ MiniMax TTS 未配置，请先设置环境变量 MINIMAX_API_KEY")
+            return
+        if not str(config.audio.minimax_voice_id).strip():
+            print("❌ MiniMax TTS 音色未配置，请设置 minimax_voice_id")
+            return
         
         # 显示会话摘要
-        print_session_summary(user_input, duration, config)
+        print_session_summary(
+            user_input,
+            duration,
+            config,
+            music_source=music_source,
+            ai_music_provider=ai_music_provider,
+        )
         
         # 确认开始
         confirm = input("是否开始生成冥想会话？(Y/N): ").strip().lower()
@@ -205,6 +301,8 @@ async def run_session():
         output_file, session_info = await app.create_meditation_session(
             user_input=user_input,
             duration_minutes=duration,
+            music_source=music_source,
+            ai_music_provider=ai_music_provider,
             cleanup=True
         )
         
