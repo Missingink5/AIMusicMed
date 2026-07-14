@@ -596,7 +596,25 @@ class MeditationApp:
         print(f"✅ 音乐计划完成：{len(music_files)} 首，共 {total_duration:.1f} 秒")
         return music_files
 
-    def combine_audio_adaptive(self, speech_files: List[str], music_info: List[Dict]) -> str:
+    def _build_output_path(self, duration_minutes: int, emotion_journey: str) -> str:
+        """按目标时长和情绪轨迹生成不覆盖已有文件的输出路径。"""
+        safe_journey = re.sub(r'[<>:"/\\|?*]', "-", emotion_journey)
+        safe_journey = re.sub(r"\s*→\s*", "-", safe_journey).strip(" .-")
+        base_name = f"{duration_minutes}分钟_{safe_journey}"
+        output_path = Path(self.config.paths.base_dir) / f"{base_name}.wav"
+        suffix = 2
+        while output_path.exists():
+            output_path = Path(self.config.paths.base_dir) / f"{base_name}_{suffix}.wav"
+            suffix += 1
+        return str(output_path)
+
+    def combine_audio_adaptive(
+        self,
+        speech_files: List[str],
+        music_info: List[Dict],
+        duration_minutes: int,
+        emotion_journey: str,
+    ) -> str:
         """基于音乐实际时长的自适应音频合成"""
         self.logger.info("开始自适应音频合成")
         print("🎧 正在进行自适应音频合成...")
@@ -648,11 +666,7 @@ class MeditationApp:
                 raise MeditationAppError(f"片段 {i+1} 合成失败: {e}") from e
         
         # 导出最终音频
-        timestamp = time.time_ns()
-        output_path = os.path.join(
-            self.config.paths.base_dir, 
-            f"meditation_session_{timestamp}.wav"
-        )
+        output_path = self._build_output_path(duration_minutes, emotion_journey)
         final_audio = final_audio.normalize_peak(0.95)
         final_audio.export(output_path, format="wav")  # 使用WAV格式确保兼容性
         
@@ -777,7 +791,12 @@ class MeditationApp:
             
             # 5. 自适应音频合成
             print("🎧 开始自适应音频合成...")
-            final_audio_path = self.combine_audio_adaptive(speech_files, music_info)
+            final_audio_path = self.combine_audio_adaptive(
+                speech_files,
+                music_info,
+                duration_minutes,
+                prompts_data["emotion_journey"],
+            )
             transition_overlap = self.config.audio.music_transition_fade_seconds * max(
                 0, len(music_info) - 1
             )

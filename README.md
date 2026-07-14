@@ -43,7 +43,7 @@ run_py313_app.py
     → generate_guidance_for_music
     → generate_speech_adaptive
     → combine_audio_adaptive
-    → meditation_session_<time_ns>.wav
+    → <冥想时长>分钟_<情绪轨迹>.wav
 ```
 
 程序会根据目标时长按“每首约一分钟”估算曲目数量。由于实际曲长约为 56 至 78 秒，并且相邻曲目存在重叠，最终音频时长通常不会与输入分钟数完全相同。

@@ -1,5 +1,7 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -209,6 +211,18 @@ class SopPlanningTests(unittest.TestCase):
             events,
             ["detect_plan", "select_analyze_music", "generate_guidance", "tts", "mix"],
         )
+
+    def test_output_name_uses_duration_and_emotion_journey_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = MeditationApp.__new__(MeditationApp)
+            app.config = SimpleNamespace(paths=SimpleNamespace(base_dir=temp_dir))
+
+            first = app._build_output_path(5, "焦虑 → 平静 → 喜悦")
+            Path(first).touch()
+            second = app._build_output_path(5, "焦虑 → 平静 → 喜悦")
+
+            self.assertEqual(Path(first).name, "5分钟_焦虑-平静-喜悦.wav")
+            self.assertEqual(Path(second).name, "5分钟_焦虑-平静-喜悦_2.wav")
 
 
 if __name__ == "__main__":
