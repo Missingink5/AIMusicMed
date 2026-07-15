@@ -2,6 +2,8 @@
   "api_keys": {
     "deepseek_api_key": "PUT_YOUR_KEY_OR_USE_ENV",
     "deepseek_base_url": "https://api.deepseek.com/v1",
+    "deepseek_model": "deepseek-v4-flash",
+    "deepseek_timeout_seconds": 180,
     "minimax_api_key": "PUT_YOUR_KEY_OR_USE_ENV",
     "minimax_base_url": "https://api.minimaxi.com",
     "elevenlabs_api_key": "PUT_YOUR_KEY_OR_USE_ENV",
@@ -26,7 +28,7 @@
     "minimax_emotion": "calm",
     "minimax_sample_rate": 32000,
     "minimax_bitrate": 128000,
-    "minimax_timeout_seconds": 180,
+    "minimax_timeout_seconds": 600,
     "minimax_max_attempts": 3,
     "speech_start_delay_seconds": 4.0,
     "music_volume_reduction": 8

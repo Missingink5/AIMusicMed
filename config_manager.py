@@ -20,6 +20,8 @@ class APIConfig:
     """API配置"""
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_timeout_seconds: int = 180
     minimax_api_key: str = ""
     minimax_base_url: str = "https://api.minimaxi.com"
     elevenlabs_api_key: str = ""
@@ -66,6 +68,12 @@ class APIConfig:
         elif self.deepseek_api_key in ("", "PUT_YOUR_KEY_OR_USE_ENV"):
             self.deepseek_api_key = ""
             print("[WARN] 未设置 DEEPSEEK_API_KEY，将使用本地模板降级模式")
+        deepseek_timeout = os.getenv("DEEPSEEK_TIMEOUT_SECONDS")
+        if deepseek_timeout:
+            self.deepseek_timeout_seconds = int(deepseek_timeout)
+        if self.deepseek_timeout_seconds <= 0:
+            raise ValueError("deepseek_timeout_seconds 必须大于 0")
+        self.deepseek_model = os.getenv("DEEPSEEK_MODEL", self.deepseek_model)
 
 
 @dataclass
@@ -143,7 +151,7 @@ class AudioConfig:
     minimax_emotion: str = "calm"
     minimax_sample_rate: int = 32000
     minimax_bitrate: int = 128000
-    minimax_timeout_seconds: int = 180
+    minimax_timeout_seconds: int = 600
     minimax_max_attempts: int = 3
     speech_start_delay_seconds: float = 4.0
     music_volume_reduction: int = 8

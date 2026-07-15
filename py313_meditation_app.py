@@ -94,7 +94,7 @@ class MeditationApp:
                 "Authorization": f"Bearer {self.config.api.deepseek_api_key}",
             },
             json={
-                "model": "deepseek-chat",
+                "model": getattr(self.config.api, "deepseek_model", "deepseek-v4-flash"),
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -103,7 +103,7 @@ class MeditationApp:
                 "max_tokens": max_tokens,
                 "stream": False,
             },
-            timeout=90,
+            timeout=getattr(self.config.api, "deepseek_timeout_seconds", 180),
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"].strip()
@@ -338,75 +338,103 @@ class MeditationApp:
             manifest.append(item)
         return manifest
 
+    def _guidance_speech_budget(self, music_duration_seconds: float) -> float:
+        """按实际音乐长度计算目标朗读时长，并保留开头与尾部纯音乐。"""
+        duration = max(1.0, float(music_duration_seconds))
+        available = duration - self.config.audio.speech_start_delay_seconds
+        return max(1.0, min(duration - 10.0, duration * 0.875, available))
+
+    def _guidance_target_characters(self, speech_seconds: float) -> int:
+        chars_per_second = 3.5 * self.config.audio.minimax_speed * 0.85
+        return max(1, int(speech_seconds * chars_per_second))
+
+    @staticmethod
+    def _guidance_max_tokens(prompt_manifest: List[Dict]) -> int:
+        total_characters = sum(item["target_text_characters"] for item in prompt_manifest)
+        return min(8192, max(4096, int(total_characters * 1.5) + 800))
+
+    @staticmethod
+    def _validate_guidance_result(result: Dict, prompt_manifest: List[Dict]) -> List[Dict]:
+        scripts = result.get("scripts")
+        if not isinstance(scripts, list) or len(scripts) != len(prompt_manifest):
+            raise ValueError("AI引导词数量与音乐片段数量不一致")
+        expected = {item["segment_id"]: item for item in prompt_manifest}
+        returned_ids = [script.get("segment_id") for script in scripts]
+        if len(set(returned_ids)) != len(returned_ids) or set(returned_ids) != set(expected):
+            raise ValueError("AI引导词片段ID重复、缺失或多余")
+        validated = []
+        for script in scripts:
+            segment_id = script.get("segment_id")
+            reference = expected.get(segment_id)
+            if reference is None:
+                raise ValueError(f"AI返回未知片段: {segment_id}")
+            if script.get("music_ref") != reference["music_ref"]:
+                raise ValueError(f"AI音乐引用不匹配: {segment_id}")
+            if script.get("grounding_fingerprint") != reference["grounding_fingerprint"]:
+                raise ValueError(f"AI音乐依据指纹不匹配: {segment_id}")
+            text_value = str(script.get("text", "")).strip()
+            if not text_value:
+                raise ValueError(f"AI返回空引导词: {segment_id}")
+            minimum_characters = max(1, int(reference["target_text_characters"] * 0.85))
+            if len(text_value) < minimum_characters:
+                raise ValueError(
+                    f"AI引导词过短: {segment_id}，{len(text_value)} < {minimum_characters}字"
+                )
+            validated.append({**reference, "text": text_value, "guidance_source": "ai"})
+        order = {item["segment_id"]: index for index, item in enumerate(prompt_manifest)}
+        validated.sort(key=lambda item: order[item["segment_id"]])
+        return validated
+
     def generate_guidance_for_music(self, user_input: str, plan: Dict, music_info: List[Dict]) -> List[Dict]:
         """Generate one grounded guidance segment after the concrete music is selected."""
         manifest = self._public_music_manifest(music_info)
         prompt_manifest = []
         for item in manifest:
-            max_speech_seconds = max(
-                1.0,
+            target_speech_seconds = self._guidance_speech_budget(
                 item["render_duration_seconds"]
-                - self.config.audio.speech_start_delay_seconds
-                - 5.0,
             )
-            max_chars = max(
-                1,
-                int(max_speech_seconds * 3.5 * self.config.audio.minimax_speed * 0.85),
-            )
+            target_characters = self._guidance_target_characters(target_speech_seconds)
             prompt_manifest.append(
                 {
                     **item,
                     "speech_start_seconds": self.config.audio.speech_start_delay_seconds,
-                    "max_speech_seconds": round(max_speech_seconds, 1),
-                    "max_text_characters": max_chars,
+                    "target_speech_seconds": round(target_speech_seconds, 1),
+                    "target_text_characters": target_characters,
+                    "max_speech_seconds": round(target_speech_seconds, 1),
+                    "max_text_characters": target_characters,
                 }
             )
-        try:
-            result = self._request_deepseek_json(
-                "你是专业冥想引导师。根据每段已经选定的音乐情绪、曲名标签、声学特征、阶段目标和时长，"
-                "逐段生成中文引导词。不得虚构音乐中未提供的乐器或事件。"
-                "返回JSON对象，包含scripts数组；每项必须原样返回segment_id、music_ref、grounding_fingerprint和text。"
-                "text应温和自然，并与render_duration_seconds匹配。",
-                json.dumps(
-                    {
-                        "user_context": user_input,
-                        "emotion_analysis": plan["emotion_analysis"],
-                        "emotion_journey": plan["emotion_journey"],
-                        "music_manifest": prompt_manifest,
-                    },
-                    ensure_ascii=False,
-                ),
-                max(1800, len(manifest) * 350),
-            )
-            scripts = result.get("scripts")
-            if not isinstance(scripts, list) or len(scripts) != len(manifest):
-                raise ValueError("AI引导词数量与音乐片段数量不一致")
-            expected = {item["segment_id"]: item for item in manifest}
-            returned_ids = [script.get("segment_id") for script in scripts]
-            if len(set(returned_ids)) != len(returned_ids) or set(returned_ids) != set(expected):
-                raise ValueError("AI引导词片段ID重复、缺失或多余")
-            validated = []
-            for script in scripts:
-                segment_id = script.get("segment_id")
-                reference = expected.get(segment_id)
-                if reference is None:
-                    raise ValueError(f"AI返回未知片段: {segment_id}")
-                if script.get("music_ref") != reference["music_ref"]:
-                    raise ValueError(f"AI音乐引用不匹配: {segment_id}")
-                if script.get("grounding_fingerprint") != reference["grounding_fingerprint"]:
-                    raise ValueError(f"AI音乐依据指纹不匹配: {segment_id}")
-                text_value = str(script.get("text", "")).strip()
-                if not text_value:
-                    raise ValueError(f"AI返回空引导词: {segment_id}")
-                validated.append({**reference, "text": text_value, "guidance_source": "ai"})
-            order = {item["segment_id"]: index for index, item in enumerate(manifest)}
-            validated.sort(key=lambda item: order[item["segment_id"]])
-            print(f"✅ AI已按 {len(validated)} 首具体音乐生成逐段引导词")
-            return validated
-        except Exception as exc:
-            self.logger.warning(f"音乐对齐引导词AI生成失败，使用本地对齐模板: {exc}")
-            print(f"⚠️ AI引导词生成不可用，使用音乐对齐本地模板: {exc}")
-            return self._generate_grounded_fallback_guidance(manifest)
+        request_payload = json.dumps(
+            {
+                "user_context": user_input,
+                "emotion_analysis": plan["emotion_analysis"],
+                "emotion_journey": plan["emotion_journey"],
+                "music_manifest": prompt_manifest,
+            },
+            ensure_ascii=False,
+        )
+        max_tokens = self._guidance_max_tokens(prompt_manifest)
+        last_error = None
+        for attempt in range(2):
+            try:
+                result = self._request_deepseek_json(
+                    "你是专业冥想引导师。根据每段已经选定的音乐情绪、曲名标签、声学特征、阶段目标和实际时长，"
+                    "逐段生成中文引导词。不得虚构音乐中未提供的乐器或事件。"
+                    "返回JSON对象，包含scripts数组；每项必须原样返回segment_id、music_ref、grounding_fingerprint和text。"
+                    "每段text应达到target_text_characters的90%-100%，朗读时长接近target_speech_seconds，"
+                    "使用自然完整的冥想指导语扩展篇幅，不得机械重复句子。",
+                    request_payload,
+                    max_tokens,
+                )
+                validated = self._validate_guidance_result(result, prompt_manifest)
+                print(f"✅ AI已按 {len(validated)} 首具体音乐生成逐段引导词")
+                return validated
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning("音乐对齐引导词第%s次生成失败: %s", attempt + 1, exc)
+        self.logger.warning(f"音乐对齐引导词AI生成失败，使用本地对齐模板: {last_error}")
+        print(f"⚠️ AI引导词生成不可用，使用音乐对齐本地模板: {last_error}")
+        return self._generate_grounded_fallback_guidance(manifest)
 
     @staticmethod
     def _generate_grounded_fallback_guidance(manifest: List[Dict]) -> List[Dict]:
@@ -458,14 +486,11 @@ class MeditationApp:
                 text_content = str(segment)
 
             music_duration = music['duration_seconds']
-            speech_budget = max(
-                1.0,
-                music_duration - self.config.audio.speech_start_delay_seconds - 5.0,
-            )
+            speech_budget = self._guidance_speech_budget(music_duration)
             adjusted_text = self._adjust_text_for_duration(
                 text_content,
                 speech_budget,
-                allow_extension=not isinstance(segment, dict),
+                allow_extension=True,
             )
             prepared_segments.append((adjusted_text, music_duration))
 

@@ -123,7 +123,13 @@ class SopPlanningTests(unittest.TestCase):
                         "segment_id": manifest[0]["segment_id"],
                         "music_ref": manifest[0]["music_ref"],
                         "grounding_fingerprint": manifest[0]["grounding_fingerprint"],
-                        "text": "跟随舒缓而轻柔的音乐，慢慢安顿呼吸。",
+                        "text": (
+                            "跟随舒缓而轻柔的音乐，慢慢安顿呼吸，感受空气经过鼻尖，"
+                            "让肩膀逐渐放松，也允许此刻的紧张被温柔看见。"
+                            "继续保持自然稳定的呼吸，把注意力轻轻带回身体，"
+                            "在音乐的陪伴中安静停留，让思绪慢慢沉淀。"
+                            "不需要催促任何改变，只需耐心陪伴每一次吸气与呼气。"
+                        ),
                     }
                 ]
             }
@@ -136,10 +142,34 @@ class SopPlanningTests(unittest.TestCase):
         scripts = app.generate_guidance_for_music("准备面试有些紧张", plan, music)
 
         self.assertEqual(scripts[0]["music_ref"], music[0]["source_file"])
+        self.assertEqual(scripts[0]["guidance_source"], "ai")
         self.assertEqual(scripts[0]["grounding_fingerprint"], manifest[0]["grounding_fingerprint"])
         request_text = app._request_deepseek_json.call_args.args[1]
         self.assertIn("tempo_bpm", request_text)
         self.assertIn(music[0]["source_file"], request_text)
+        request_payload = json.loads(request_text)
+        segment = request_payload["music_manifest"][0]
+        self.assertEqual(segment["target_speech_seconds"], 50.0)
+        self.assertEqual(segment["target_text_characters"], 119)
+        self.assertEqual(app._request_deepseek_json.call_args.args[2], 4096)
+
+    def test_guidance_budget_scales_from_60_to_400_actual_seconds(self):
+        app = MeditationApp.__new__(MeditationApp)
+        attach_audio_config(app)
+
+        self.assertEqual(app._guidance_speech_budget(60), 50.0)
+        self.assertEqual(app._guidance_speech_budget(400), 350.0)
+        self.assertEqual(app._guidance_target_characters(50), 119)
+        self.assertEqual(app._guidance_target_characters(350), 833)
+
+    def test_guidance_token_budget_expands_for_multiple_long_segments(self):
+        prompt_manifest = [
+            {"target_text_characters": 833},
+            {"target_text_characters": 833},
+            {"target_text_characters": 833},
+        ]
+
+        self.assertEqual(MeditationApp._guidance_max_tokens(prompt_manifest), 4548)
 
     def test_duplicate_ai_segment_ids_cannot_realign_to_other_music(self):
         app = MeditationApp.__new__(MeditationApp)

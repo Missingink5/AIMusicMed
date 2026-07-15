@@ -37,6 +37,14 @@ class TextDurationTests(unittest.TestCase):
         with self.assertRaisesRegex(MeditationAppError, "引导文本为空"):
             self.app._adjust_text_for_duration("   ", 31.0)
 
+    def test_very_long_guidance_is_limited_to_350_second_budget(self):
+        text = "请保持自然呼吸，温柔地觉察身体与情绪的变化。" * 100
+
+        result = self.app._adjust_text_for_duration(text, 350.0)
+
+        self.assertTrue(result.strip())
+        self.assertLessEqual(len(result), int(350.0 * 3.5 * 0.8 * 0.85))
+
 
 if __name__ == "__main__":
     unittest.main()

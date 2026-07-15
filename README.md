@@ -110,6 +110,9 @@ ELEVENLABS_API_KEY=你的_ElevenLabs_API_Key
 
 `MINIMAX_API_KEY` 是 TTS 所必需的，也供 MiniMax Music 2.6 复用。`DEEPSEEK_API_KEY` 可选；未配置或请求失败时，程序会使用本地回退逻辑。只有选择 ElevenLabs Music 时才需要 `ELEVENLABS_API_KEY`。AI 音乐模式会在付费请求前检查所选后端的密钥。
 
+长引导词请求可通过 `DEEPSEEK_TIMEOUT_SECONDS` 调整超时，默认 `180` 秒。
+DeepSeek 模型可通过 `DEEPSEEK_MODEL` 调整，默认使用 `deepseek-v4-flash`。
+
 `.env` 和 `config.json` 已被 `.gitignore` 排除。不要把真实密钥写入源码、README、示例配置或 Git 提交。
 
 ## 配置
@@ -123,6 +126,7 @@ ELEVENLABS_API_KEY=你的_ElevenLabs_API_Key
 - `minimax_model`：默认 `speech-2.8-hd`。
 - `minimax_voice_id`：系统音色或已激活的授权克隆音色 ID。
 - `minimax_speed`：默认 `0.8`，用于较慢的冥想引导语速。
+- `minimax_timeout_seconds`：单段 TTS 请求超时，默认 `600` 秒，用于较长音乐对应的长引导语音。
 - `speech_start_delay_seconds`：每首音乐开始后等待多久进入语音，默认 4 秒。
 - `music_volume_reduction`：混音时音乐相对语音的衰减量，默认 8 dB。
 
@@ -150,6 +154,8 @@ python run_py313_app.py
 程序会依次要求选择或输入当前感受、设置时长、选择“本地曲库”或“AI 生成音乐”并确认生成。选择 AI 后还需选择 ElevenLabs 或 MiniMax 作为主音乐后端。完整运行会调用 DeepSeek、MiniMax TTS，以及所选音乐 API，依赖网络、账户额度和有效音色。
 
 AI 音乐按阶段串行生成。网络连接失败、超时、HTTP 429、HTTP 5xx 或返回音频损坏时，程序会尝试使用另一个已配置的音乐后端一次；鉴权、余额、请求参数或内容审核错误会直接终止。备用后端没有密钥时会明确报错，不会静默改用本地曲库。超时等状态不能保证主后端未计费，因此自动切换在极端情况下可能产生两次生成费用，实际尝试记录会写入 manifest。
+
+冥想引导词按每段音乐的实际时长动态扩展：目标朗读时长取“音乐时长减 10 秒”和“音乐时长的 87.5%”中的较小值，并受实际可用窗口约束。例如 60 秒音乐约生成 50 秒引导，400 秒音乐约生成 350 秒引导。DeepSeek 输出上限会按各段目标字数动态扩大到最高 8192 tokens，过短响应会重试一次；这是客户端请求上限，不会改变 DeepSeek 账户余额或速率额度。
 
 ElevenLabs 使用明确的毫秒时长参数；MiniMax Music 2.6 没有精确时长字段，程序只会在提示词中写入目标秒数，并完整保留返回音乐。因此 MiniMax 的阶段时长可能明显偏离规划值，最终以 manifest 和会话摘要中的实际时长为准。
 
