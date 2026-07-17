@@ -4,3 +4,5 @@
 !/requirements-web.txt
 !/webapp/
 !/webapp/**
+/backups/
+/webapp-data/
