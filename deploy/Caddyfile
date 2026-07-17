@@ -5,6 +5,9 @@
 {$AIMUSICMED_DOMAIN} {
 	encode zstd gzip {
 		skip_encoding audio/mpeg audio/wav audio/mp3
+		skip_encoding image/png image/jpeg image/webp image/svg+xml image/gif
+		skip_encoding application/javascript text/css font/woff font/woff2
+		skip_encoding application/octet-stream
 	}
 
 	# Worker endpoints stay reachable only on Docker's private api:8000 network.
@@ -19,6 +22,13 @@
 	handle {
 		reverse_proxy web:3000
 	}
+
+	# Cache hashed static assets aggressively (vinext filenames include content hash).
+	# HTML stays uncached so users always get the latest app shell.
+	@staticAssets {
+		path /assets/* /favicon.ico /manifest.webmanifest /sw.js /og.png
+	}
+	header @staticAssets Cache-Control "public, max-age=31536000, immutable"
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
