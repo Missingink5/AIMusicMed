@@ -1204,6 +1204,8 @@ function PlanCard({
   setPlan,
   onStart,
   starting,
+  voiceCache,
+  trackCache,
 }: {
   plan: PlanDraft;
   setPlan: (plan: PlanDraft) => void;
