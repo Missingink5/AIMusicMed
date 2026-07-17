@@ -529,6 +529,105 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(retried.status_code, 201)
         self.assertEqual(retried.json()["retry_of_job_id"], job)
 
+    def test_failed_job_can_copy_locked_plan_to_new_editable_draft(self):
+        user = self.create_user_client("edit-failed@example.com")
+        conversation = user.post(
+            "/conversations", json={"title": "失败后修改"}
+        ).json()["id"]
+        message = user.post(
+            f"/conversations/{conversation}/messages",
+            json={"content": "工作压力很大，希望慢慢安定下来"},
+        ).json()["id"]
+        original_draft = user.post(
+            f"/conversations/{conversation}/plan-draft", json={}
+        ).json()
+        original_plan = user.post(
+            f"/conversations/{conversation}/plans",
+            json={
+                "message_id": message,
+                "draft_id": original_draft["id"],
+                "duration_minutes": 5,
+                "music_source": "library",
+                "target_emotion": "auto",
+                "credential_mode": "platform",
+                "voice_mode": "tts",
+                "guidance_style": "auto",
+                "language_density": "balanced",
+            },
+        ).json()["id"]
+        job = user.post(f"/plans/{original_plan}/jobs").json()["id"]
+        self.client.post("/internal/worker/claim", headers=self.worker_headers())
+        self.client.post(
+            f"/internal/worker/jobs/{job}/fail",
+            headers=self.worker_headers(),
+            json={"error_code": "provider_unavailable"},
+        )
+
+        copied_response = user.post(f"/jobs/{job}/editable-draft")
+        self.assertEqual(copied_response.status_code, 201)
+        copied = copied_response.json()
+        self.assertNotEqual(copied["id"], original_draft["id"])
+        self.assertIsNone(copied["locked_at"])
+        self.assertEqual(copied["source_job_id"], job)
+        repeated = user.post(f"/jobs/{job}/editable-draft").json()
+        self.assertEqual(repeated["id"], copied["id"])
+        self.assertTrue(repeated["idempotent_replay"])
+
+        updated = user.patch(
+            f"/conversations/{conversation}/plan-draft",
+            json={"duration_minutes": 15, "voice_mode": "pure_music"},
+        )
+        self.assertEqual(updated.status_code, 200)
+        revised = updated.json()["draft"]
+        revised_plan = user.post(
+            f"/conversations/{conversation}/plans",
+            json={
+                "message_id": message,
+                "draft_id": revised["id"],
+                "duration_minutes": revised["duration_minutes"],
+                "music_source": revised["music_source"],
+                "target_emotion": revised["target_emotion"],
+                "credential_mode": revised["credential_mode"],
+                "voice_mode": revised["voice_mode"],
+                "guidance_style": revised["guidance_style"],
+                "language_density": revised["language_density"],
+            },
+        )
+        self.assertEqual(revised_plan.status_code, 201)
+        self.assertNotEqual(revised_plan.json()["id"], original_plan)
+        self.assertEqual(
+            user.post(f"/plans/{revised_plan.json()['id']}/jobs").status_code,
+            201,
+        )
+
+    def test_editable_draft_rejects_non_terminal_stranger_and_deleted_conversation(self):
+        owner = self.create_user_client("edit-owner@example.com")
+        stranger = self.create_user_client("edit-stranger@example.com")
+        plan = self.create_plan(owner).json()["id"]
+        queued_job = owner.post(f"/plans/{plan}/jobs").json()["id"]
+        self.assertEqual(
+            owner.post(f"/jobs/{queued_job}/editable-draft").status_code,
+            409,
+        )
+        self.assertEqual(
+            stranger.post(f"/jobs/{queued_job}/editable-draft").status_code,
+            404,
+        )
+        self.client.post("/internal/worker/claim", headers=self.worker_headers())
+        self.client.post(
+            f"/internal/worker/jobs/{queued_job}/fail",
+            headers=self.worker_headers(),
+            json={"error_code": "provider_unavailable"},
+        )
+        with closing(sqlite3.connect(self.settings.database_path)) as conn:
+            conversation = conn.execute(
+                "SELECT conversation_id FROM plans WHERE id=?", (plan,)
+            ).fetchone()[0]
+        self.assertEqual(owner.delete(f"/conversations/{conversation}").status_code, 200)
+        response = owner.post(f"/jobs/{queued_job}/editable-draft")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "conversation_deleted")
+
     @patch("webapp.app.requests.post")
     def test_assistant_reply_streams_and_is_persisted(self, post):
         user = self.create_user_client("stream@example.com")

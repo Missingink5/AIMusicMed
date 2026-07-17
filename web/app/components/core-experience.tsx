@@ -442,6 +442,24 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
     }
   }
 
+  async function editFailedJob() {
+    if (!jobId) return;
+    setError("");
+    try {
+      const result = await api.createEditableDraftFromJob(jobId);
+      setPlan({ ...emptyPlan, ...unwrapDraft(result) });
+      setJobState("idle");
+      setFailure("");
+    } catch (reason) {
+      setError(
+        errorMessage(
+          reason,
+          "暂时无法恢复这个方案，你仍可按原方案重试。",
+        ),
+      );
+    }
+  }
+
   async function renameConversation(item: Conversation) {
     const title = window.prompt("为这段会话重新命名", item.title)?.trim();
     if (!title || title === item.title) return;
@@ -681,10 +699,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
             cancelJob={cancelJob}
             retryJob={retryJob}
             copyPlanToNewConversation={copyPlanToNewConversation}
-            editAfterFailure={() => {
-              setJobState("idle");
-              setFailure("");
-            }}
+            editAfterFailure={() => void editFailedJob()}
             failure={failure}
             workId={workId}
             workFavorite={workFavorite}

@@ -35,6 +35,8 @@ test("job progress uses real events and supports both recovery paths", () => {
   assert.match(ui, /已用时/);
   assert.match(ui, /按原方案重试/);
   assert.match(ui, /修改方案后重试/);
+  assert.match(ui, /createEditableDraftFromJob/);
+  assert.match(api, /\/jobs\/\$\{jobId\}\/editable-draft/);
   assert.doesNotMatch(ui, /预计剩余/);
 });
 

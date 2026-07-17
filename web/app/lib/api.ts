@@ -257,6 +257,11 @@ export const api = {
     request<{ id: string; status: string }>(`/jobs/${jobId}/retry`, {
       method: "POST",
     }),
+  createEditableDraftFromJob: (jobId: string) =>
+    request<PlanDraft | { draft: PlanDraft }>(
+      `/jobs/${jobId}/editable-draft`,
+      { method: "POST" },
+    ),
   saveCredentials: (credentials: {
     deepseek_api_key: string;
     minimax_api_key: string;

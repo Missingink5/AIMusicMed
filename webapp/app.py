@@ -1263,6 +1263,70 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         public_job["retry_allowed"] = job["status"] in ("failed", "cancelled")
         return {"job": public_job, "events": [dict(row) for row in events]}
 
+    @app.post("/jobs/{job_id}/editable-draft", status_code=201)
+    def create_editable_draft_from_job(job_id: str, user=Depends(current_user)):
+        now = _now()
+        with db.transaction(immediate=True) as conn:
+            source = conn.execute(
+                "SELECT j.status AS job_status,j.plan_id,p.conversation_id,p.duration_minutes,"
+                "p.music_source,p.target_emotion,p.credential_mode,p.voice_mode,p.guidance_style,"
+                "p.language_density,c.deleted_at,c.purged_at "
+                "FROM jobs j JOIN plans p ON p.id=j.plan_id "
+                "JOIN conversations c ON c.id=p.conversation_id "
+                "WHERE j.id=? AND j.user_id=? AND c.user_id=?",
+                (job_id, user["id"], user["id"]),
+            ).fetchone()
+            if not source:
+                raise ApiError("job_not_found", "任务不存在", 404)
+            if source["job_status"] not in ("failed", "cancelled"):
+                raise ApiError("job_not_editable", "只有失败或已取消的任务可以修改方案", 409)
+            if source["deleted_at"] is not None or source["purged_at"] is not None:
+                raise ApiError("conversation_deleted", "已删除的会话不能修改方案", 409)
+
+            current = conn.execute(
+                "SELECT * FROM plan_drafts WHERE conversation_id=?",
+                (source["conversation_id"],),
+            ).fetchone()
+            if current and current["locked_at"] is None:
+                if current["source_job_id"] == job_id:
+                    return {**dict(current), "idempotent_replay": True}
+                raise ApiError(
+                    "editable_draft_exists", "当前会话已有可编辑方案，请先处理该方案", 409
+                )
+
+            if current:
+                summary = current["summary"]
+                primary_emotion = current["primary_emotion"]
+                emotion_path = current["emotion_path"]
+                conn.execute("DELETE FROM plan_drafts WHERE id=?", (current["id"],))
+            else:
+                context_rows = conn.execute(
+                    "SELECT role,content FROM messages WHERE conversation_id=? ORDER BY rowid",
+                    (source["conversation_id"],),
+                ).fetchall()
+                fallback = _fallback_plan_draft(_bounded_conversation_context(context_rows))
+                summary = fallback["summary"]
+                primary_emotion = fallback["primary_emotion"]
+                emotion_path = fallback["emotion_path"]
+
+            draft_id = _id()
+            conn.execute(
+                "INSERT INTO plan_drafts(id,conversation_id,summary,primary_emotion,emotion_path,"
+                "duration_minutes,music_source,target_emotion,credential_mode,voice_mode,guidance_style,"
+                "language_density,created_at,updated_at,locked_at,source_job_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?)",
+                (
+                    draft_id, source["conversation_id"], summary, primary_emotion, emotion_path,
+                    source["duration_minutes"], source["music_source"], source["target_emotion"],
+                    source["credential_mode"], source["voice_mode"], source["guidance_style"],
+                    source["language_density"], now, now, job_id,
+                ),
+            )
+            created = conn.execute(
+                "SELECT * FROM plan_drafts WHERE id=?", (draft_id,)
+            ).fetchone()
+        return dict(created)
+
     @app.post("/jobs/{job_id}/retry", status_code=201)
     def retry_job(job_id: str, user=Depends(current_user)):
         return enqueue_job(None, user, retry_of_job_id=job_id)

@@ -133,6 +133,7 @@ class Database:
             self._add_column(conn, "plans", "language_density", "TEXT NOT NULL DEFAULT 'balanced'")
             self._add_column(conn, "plans", "draft_id", "TEXT")
             self._add_column(conn, "plan_drafts", "locked_at", "INTEGER")
+            self._add_column(conn, "plan_drafts", "source_job_id", "TEXT")
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_draft_id "
                 "ON plans(draft_id) WHERE draft_id IS NOT NULL"
