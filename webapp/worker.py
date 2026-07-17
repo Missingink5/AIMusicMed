@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import datetime
 import os
 import shutil
 import subprocess
@@ -279,7 +280,11 @@ def run_claim(client: WorkerClient, claim: dict) -> None:
         if cancel_requested():
             raise RuntimeError("cancelled")
         _export_artifacts(Path(source_wav), target_wav, session_info.get("guidance_text", ""))
-        client.post(f"/internal/worker/jobs/{job_id}/complete", {"title": "我的音乐冥想"})
+        journey = session_info.get("emotion_journey") or ""
+        duration = claim.get("duration_minutes", 0)
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        title = f"{date_str} · {duration}分钟 · {journey}" if journey else f"{date_str} · {duration}分钟冥想"
+        client.post(f"/internal/worker/jobs/{job_id}/complete", {"title": title})
     except Exception as exc:
         code = str(exc) if str(exc) in {"cancelled", "generation_export_failed"} else "generation_failed"
         for artifact in (target_wav, target_wav.with_suffix(".mp3"), target_wav.with_suffix(".txt")):

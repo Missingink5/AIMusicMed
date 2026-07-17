@@ -122,9 +122,9 @@ class MeditationApp:
                 "max_tokens": max_tokens,
                 "stream": False,
                 "response_format": {"type": "json_object"},
-                # Disable deep thinking to prevent reasoning tokens from
-                # consuming the output budget (finish_reason=length, empty content).
-                "thinking": {"type": "disabled"},
+                # Enable thinking with a moderate budget so the model can
+                # reason about guidance quality without consuming the output window.
+                "thinking": {"type": "enabled", "budget_tokens": 4096},
             },
             timeout=getattr(self.config.api, "deepseek_timeout_seconds", 180),
         )
@@ -439,7 +439,7 @@ class MeditationApp:
     @staticmethod
     def _guidance_max_tokens(prompt_manifest: List[Dict]) -> int:
         total_characters = sum(item["target_text_characters"] for item in prompt_manifest)
-        return min(16384, max(4096, int(total_characters * 1.5) + 800))
+        return min(65536, max(4096, int(total_characters * 1.5) + 800))
 
     @staticmethod
     def _validate_guidance_result(result: Dict, prompt_manifest: List[Dict]) -> List[Dict]:

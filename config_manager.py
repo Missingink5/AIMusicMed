@@ -141,7 +141,7 @@ class PathConfig:
 class AudioConfig:
     """音频配置"""
     preferred_track_duration_seconds: int = 60
-    music_transition_fade_seconds: float = 3.0
+    music_transition_fade_seconds: float = 1.5
     tts_backend: str = "minimax"
     minimax_model: str = "speech-2.8-hd"
     minimax_voice_id: str = "female-chengshu-jingpin"
