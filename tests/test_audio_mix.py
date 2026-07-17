@@ -18,7 +18,9 @@ class AudioMixTests(unittest.TestCase):
         combined = left.append_with_crossfade(right, 100)
 
         self.assertEqual(combined.data.shape[-1], 1900)
-        self.assertAlmostEqual(float(combined.data[0, 950]), 0.5, places=5)
+        self.assertAlmostEqual(
+            float(combined.data[0, 950]), float(np.sqrt(2) * 0.25), places=4
+        )
 
     def test_peak_normalization_prevents_clipping(self):
         loud = AudioSegment(np.array([[1.4, -1.2, 0.4]], dtype=np.float32), 1000)

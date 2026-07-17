@@ -14,16 +14,19 @@ import {
   Conversation,
   JobEvent,
   Message,
+  MusicTrack,
   PlanDraft,
   streamAssistant,
   User,
+  VoiceAsset,
   WorkSummary,
 } from "../lib/api";
 import { Brand } from "./brand";
 import { ThemeToggle } from "./theme-toggle";
-import { AccountSettings, AdminView, ApiSettings } from "./app-demo";
+import { AccountSettings, ApiSettings } from "./app-demo";
+import { OperationsAdmin, UserAssets } from "./operations-console";
 
-type View = "chat" | "works" | "api" | "account" | "admin";
+type View = "chat" | "works" | "assets" | "api" | "account" | "admin";
 type JobState = "idle" | "running" | "done" | "failed" | "cancelled";
 type PlayerTrack = { workId: string; title: string } | null;
 
@@ -33,6 +36,8 @@ const emptyPlan: PlanDraft = {
   target_emotion: "auto",
   credential_mode: "platform",
   voice_mode: "tts",
+  selected_voice_id: "female-chengshu-jingpin",
+  selected_music_asset_id: null,
   guidance_style: "auto",
   language_density: "balanced",
 };
@@ -392,6 +397,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
           target_emotion: plan.target_emotion,
           credential_mode: plan.credential_mode,
           voice_mode: plan.voice_mode,
+          selected_voice_id: plan.selected_voice_id,
+          selected_music_asset_id: plan.selected_music_asset_id,
           guidance_style: plan.guidance_style,
           language_density: plan.language_density,
         });
@@ -404,6 +411,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         target_emotion: plan.target_emotion,
         credential_mode: plan.credential_mode,
         voice_mode: plan.voice_mode,
+        selected_voice_id: plan.selected_voice_id,
+        selected_music_asset_id: plan.selected_music_asset_id,
         guidance_style: plan.guidance_style,
         language_density: plan.language_density,
       });
@@ -527,6 +536,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         target_emotion: plan.target_emotion,
         credential_mode: plan.credential_mode,
         voice_mode: plan.voice_mode,
+        selected_voice_id: plan.selected_voice_id,
+        selected_music_asset_id: plan.selected_music_asset_id,
         guidance_style: plan.guidance_style,
         language_density: plan.language_density,
       });
@@ -574,6 +585,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         target_emotion: next.target_emotion,
         credential_mode: next.credential_mode,
         voice_mode: next.voice_mode,
+        selected_voice_id: next.selected_voice_id,
+        selected_music_asset_id: next.selected_music_asset_id,
         guidance_style: next.guidance_style,
         language_density: next.language_density,
       });
@@ -600,6 +613,10 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         onDelete={deleteConversation}
         onRestore={restoreConversation}
         onWorks={() => void openFavoriteWorks()}
+        onAssets={() => {
+          setView("assets");
+          setDrawer(false);
+        }}
         onLogout={async () => {
           window.dispatchEvent(new Event("aimusicmed:logout"));
           for (let index = window.localStorage.length - 1; index >= 0; index--) {
@@ -653,6 +670,12 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
               onClick={() => setView("api")}
             >
               我的 API
+            </button>
+            <button
+              className={view === "assets" ? "active" : ""}
+              onClick={() => setView("assets")}
+            >
+              我的素材
             </button>
             <button
               className={view === "works" ? "active" : ""}
@@ -727,6 +750,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
           />
         )}
         {view === "api" && <ApiSettings />}
+        {view === "assets" && <UserAssets />}
         {view === "works" && (
           <FavoriteWorksView
             works={favoriteWorks}
@@ -762,7 +786,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
             }}
           />
         )}
-        {view === "admin" && user?.role === "admin" && <AdminView />}
+        {view === "admin" && user?.role === "admin" && <OperationsAdmin />}
       </main>
       <GlobalPlayer track={track} onClose={() => setTrack(null)} />
     </div>
@@ -784,6 +808,7 @@ function HistorySidebar({
   onDelete,
   onRestore,
   onWorks,
+  onAssets,
   onLogout,
   user,
 }: {
@@ -801,6 +826,7 @@ function HistorySidebar({
   onDelete: (item: Conversation) => void;
   onRestore: (item: Conversation) => void;
   onWorks: () => void;
+  onAssets: () => void;
   onLogout: () => void;
   user: User | null;
 }) {
@@ -837,6 +863,9 @@ function HistorySidebar({
       </button>
       <button className="works-shortcut" onClick={onWorks}>
         <span>★</span> 收藏作品
+      </button>
+      <button className="works-shortcut" onClick={onAssets}>
+        <span>♫</span> 我的音色与曲库
       </button>
       <label className="search-box">
         <span>⌕</span>
@@ -1166,6 +1195,25 @@ function PlanCard({
   onStart: () => void;
   starting: boolean;
 }) {
+  const [availableVoices, setAvailableVoices] = useState<VoiceAsset[]>([]);
+  const [availableTracks, setAvailableTracks] = useState<MusicTrack[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      api.listVoices(),
+      api.listMusicTracks("private"),
+      api.listMusicTracks("public"),
+    ]).then(([voices, privateTracks, publicTracks]) => {
+      if (cancelled) return;
+      setAvailableVoices(
+        voices.items.filter((voice) => voice.status === "ready"),
+      );
+      setAvailableTracks([...privateTracks.items, ...publicTracks.items]);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const field = <K extends keyof PlanDraft>(key: K, value: PlanDraft[K]) =>
     setPlan({ ...plan, [key]: value });
   return (
@@ -1218,29 +1266,73 @@ function PlanCard({
           音乐
           <select
             value={plan.music_source}
-            onChange={(event) =>
-              field(
-                "music_source",
-                event.target.value as PlanDraft["music_source"],
-              )
-            }
+            onChange={(event) => {
+              const musicSource =
+                event.target.value as PlanDraft["music_source"];
+              setPlan({
+                ...plan,
+                music_source: musicSource,
+                selected_music_asset_id:
+                  musicSource === "library"
+                    ? plan.selected_music_asset_id
+                    : null,
+              });
+            }}
           >
             <option value="library">内置曲库</option>
             <option value="ai">AI 生成</option>
           </select>
         </label>
+        {plan.music_source === "library" && (
+          <label>
+            曲目
+            <select
+              value={plan.selected_music_asset_id ?? ""}
+              onChange={(event) =>
+                field("selected_music_asset_id", event.target.value || null)
+              }
+            >
+              <option value="">系统自动选择（优先私人曲库）</option>
+              {availableTracks.map((track) => (
+                <option value={track.id} key={track.id}>
+                  {track.name}（{track.scope === "private" ? "私人" : "公共"} ·{" "}
+                  {track.primary_emotion}）
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           引导声音
           <select
-            value={plan.voice_mode}
-            onChange={(event) =>
-              field(
-                "voice_mode",
-                event.target.value as PlanDraft["voice_mode"],
-              )
+            value={
+              plan.voice_mode === "pure_music"
+                ? "pure_music"
+                : plan.selected_voice_id ?? "female-chengshu-jingpin"
             }
+            onChange={(event) => {
+              if (event.target.value === "pure_music")
+                setPlan({
+                  ...plan,
+                  voice_mode: "pure_music",
+                  selected_voice_id: null,
+                });
+              else
+                setPlan({
+                  ...plan,
+                  voice_mode: "tts",
+                  selected_voice_id: event.target.value,
+                });
+            }}
           >
-            <option value="tts">成熟温柔女声（精品）</option>
+            <option value="female-chengshu-jingpin">
+              成熟温柔女声（精品）
+            </option>
+            {availableVoices.map((voice) => (
+              <option value={voice.id} key={voice.id}>
+                {voice.name}（我的音色）
+              </option>
+            ))}
             <option value="pure_music">纯音乐，不要语音</option>
           </select>
         </label>

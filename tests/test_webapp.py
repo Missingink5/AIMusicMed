@@ -54,6 +54,15 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(verified.status_code, 200)
         self.client.put("/account/password", json={"password": PASSWORD, "password_confirmation": PASSWORD})
 
+    def action_token(self, action: str) -> str:
+        issued = self.client.post(
+            "/admin/sensitive-actions/code/request", json={"action": action}
+        ).json()
+        return self.client.post(
+            "/admin/sensitive-actions/code/verify",
+            json={"action": action, "code": issued["verification_code"]},
+        ).json()["action_token"]
+
     def create_user_client(self, email: str) -> TestClient:
         with closing(sqlite3.connect(self.settings.database_path)) as conn:
             conn.execute("DELETE FROM auth_events")
@@ -310,7 +319,11 @@ class WebAppTests(unittest.TestCase):
         user_id = user.get("/me").json()["id"]
         users = self.client.get("/admin/users").json()["items"]
         self.assertIn("quota-admin@example.com", [item["email"] for item in users])
-        changed = self.client.patch(f"/admin/users/{user_id}/quota", json={"daily_limit": 4})
+        changed = self.client.patch(
+            f"/admin/users/{user_id}/quota",
+            headers={"X-Admin-Action-Token": self.action_token("adjust_user_quota")},
+            json={"daily_limit": 4},
+        )
         self.assertEqual(changed.json()["daily_limit"], 4)
         self.assertEqual(user.get("/me").json()["daily_limit"], 4)
         self.assertNotIn("content", str(users))

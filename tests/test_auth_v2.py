@@ -37,6 +37,15 @@ class AuthV2Tests(unittest.TestCase):
         result = self.client.post("/auth/code/verify", json={"email": "admin@example.com", "code": code, "purpose": "login"})
         self.assertEqual(result.json()["password_setup"], "required")
 
+    def action_token(self, action: str) -> str:
+        issued = self.client.post(
+            "/admin/sensitive-actions/code/request", json={"action": action}
+        ).json()
+        return self.client.post(
+            "/admin/sensitive-actions/code/verify",
+            json={"action": action, "code": issued["verification_code"]},
+        ).json()["action_token"]
+
     def clear_events(self):
         with closing(sqlite3.connect(self.settings.database_path)) as conn:
             conn.execute("DELETE FROM auth_events")
@@ -73,7 +82,11 @@ class AuthV2Tests(unittest.TestCase):
         with closing(sqlite3.connect(self.settings.database_path)) as conn:
             row = conn.execute("SELECT users.id,code_hash FROM verification_codes JOIN users ON users.id=verification_codes.user_id WHERE email='user@example.com'").fetchone()
             self.assertNotIn(code, row[1])
-        self.client.patch(f"/admin/users/{row[0]}/status", json={"status": "disabled"})
+        self.client.patch(
+            f"/admin/users/{row[0]}/status",
+            headers={"X-Admin-Action-Token": self.action_token("change_user_status")},
+            json={"status": "disabled"},
+        )
         self.assertEqual(user.get("/me").status_code, 401)
         user.close()
 
@@ -96,6 +109,7 @@ class AuthV2Tests(unittest.TestCase):
         for target_status in ("disabled", "active"):
             response = self.client.patch(
                 f"/admin/users/{user_id}/status",
+                headers={"X-Admin-Action-Token": self.action_token("change_user_status")},
                 json={"status": target_status},
             )
             self.assertEqual(response.status_code, 409)

@@ -21,7 +21,13 @@ class Settings:
     tencentcloud_region: str = "ap-hongkong"
     ses_from: str = ""
     ses_template_id: int = 0
+    ses_alert_template_id: int = 0
     global_task_concurrency: int = 1
+    disk_warning_percent: int = 70
+    disk_cleanup_percent: int = 80
+    disk_upload_stop_percent: int = 85
+    disk_generation_stop_percent: int = 90
+    disk_resume_percent: int = 75
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -49,5 +55,13 @@ class Settings:
             tencentcloud_region=os.getenv("TENCENTCLOUD_REGION", "ap-hongkong").strip(),
             ses_from=os.getenv("AIMUSICMED_SES_FROM", "").strip(),
             ses_template_id=int(os.getenv("AIMUSICMED_SES_TEMPLATE_ID", "0")),
+            ses_alert_template_id=int(
+                os.getenv("AIMUSICMED_SES_ALERT_TEMPLATE_ID", "0")
+            ),
             global_task_concurrency=global_task_concurrency,
+            disk_warning_percent=int(os.getenv("AIMUSICMED_DISK_WARNING_PERCENT", "70")),
+            disk_cleanup_percent=int(os.getenv("AIMUSICMED_DISK_CLEANUP_PERCENT", "80")),
+            disk_upload_stop_percent=int(os.getenv("AIMUSICMED_DISK_UPLOAD_STOP_PERCENT", "85")),
+            disk_generation_stop_percent=int(os.getenv("AIMUSICMED_DISK_GENERATION_STOP_PERCENT", "90")),
+            disk_resume_percent=int(os.getenv("AIMUSICMED_DISK_RESUME_PERCENT", "75")),
         )

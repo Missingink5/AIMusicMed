@@ -3,4 +3,5 @@ uvicorn[standard]>=0.35,<1
 cryptography>=45,<47
 argon2-cffi>=23,<26
 httpx>=0.28,<1
+python-multipart>=0.0.20,<1
 tencentcloud-sdk-python-ses>=3.0.0,<4

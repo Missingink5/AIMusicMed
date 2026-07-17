@@ -19,6 +19,7 @@ from typing import Any, Callable, List, Dict, Optional, Tuple
 
 import librosa
 import numpy as np
+from audio_mastering import equal_power_fade, prevent_clipping
 
 # 导入兼容的音频处理模块
 from audio_compat import AudioSegment
@@ -756,6 +757,7 @@ class MeditationApp:
         ai_prompt_specs: Optional[List[Dict]] = None,
         asset_dir: Optional[str] = None,
         anonymous_context: str = "",
+        selected_music: Optional[Dict] = None,
     ) -> List[Dict]:
         """按所选来源生成统一结构的音乐信息。"""
         self.logger.info("开始智能音乐生成")
@@ -764,6 +766,8 @@ class MeditationApp:
         ):
             raise MeditationAppError("音乐计划必须包含有效的 segment_id")
         if music_source == "library":
+            if selected_music:
+                return self._generate_selected_music(music_prompts, selected_music)
             print("🎭 使用正式整曲情绪转换音乐系统...")
             return self._generate_planned_music(music_prompts)
         if music_source != "ai":
@@ -779,6 +783,104 @@ class MeditationApp:
             Path(asset_dir),
             anonymous_context,
         )
+
+    def _generate_selected_music(
+        self, segment_plan: List[Dict], selected_music: Dict
+    ) -> List[Dict]:
+        """Render user-selected music from declared metadata without content analysis."""
+        source_path = str(selected_music.get("path") or "")
+        if not source_path:
+            raise MeditationAppError("所选私人音乐缺少文件路径")
+        original = AudioSegment.from_file(source_path)
+        edit = selected_music.get("edit") or {}
+        start_ms = max(0, int(edit.get("trim_start_ms") or 0))
+        end_value = edit.get("trim_end_ms")
+        end_ms = min(len(original), int(end_value)) if end_value is not None else len(original)
+        if end_ms <= start_ms:
+            raise MeditationAppError("所选私人音乐的裁剪区间无效")
+        base = original[start_ms:end_ms]
+        if len(base) <= 0:
+            raise MeditationAppError("所选私人音乐裁剪后为空")
+        # Guard against quadratic concatenation: require at least 100 ms
+        # retained so that a single segment never repeats more than ~200×.
+        min_retained_ms = 100
+        max_repeat = 200
+        if len(base) < min_retained_ms:
+            raise MeditationAppError(
+                f"所选私人音乐裁剪后时长不足 {min_retained_ms} 毫秒，请保留更长的片段"
+            )
+
+        loudness = str(edit.get("loudness") or "auto")
+        reduction_db = {"light": 6.0, "standard": 3.0, "strong": 0.0}.get(
+            loudness, 3.0
+        )
+        if reduction_db:
+            base = base - reduction_db
+
+        tags = [str(item) for item in selected_music.get("tags") or [] if str(item)]
+        primary_emotion = str(selected_music.get("primary_emotion") or "平静")
+        filename = str(selected_music.get("name") or Path(source_path).name)
+        fade_in_ms = max(0, min(10000, int(edit.get("fade_in_ms") or 2000)))
+        fade_out_ms = max(0, min(10000, int(edit.get("fade_out_ms") or 2000)))
+        rendered_items = []
+
+        for index, segment in enumerate(segment_plan):
+            target_ms = max(1000, int(round(float(segment["duration_seconds"]) * 1000)))
+            rendered = base
+            iterations = 0
+            while len(rendered) < target_ms:
+                iterations += 1
+                if iterations > max_repeat:
+                    raise MeditationAppError(
+                        "所选音乐片段过短，无法在安全次数内填满目标时长，请保留更长的片段"
+                    )
+                crossfade_ms = min(250, len(rendered) // 4, len(base) // 4)
+                rendered = rendered.append_with_crossfade(base, crossfade_ms)
+            rendered = rendered[:target_ms]
+            data = equal_power_fade(
+                np.array(rendered.data, copy=True),
+                rendered.sample_rate,
+                min(fade_in_ms, target_ms / 2) / 1000,
+                min(fade_out_ms, target_ms / 2) / 1000,
+            )
+            rendered = AudioSegment(
+                prevent_clipping(data), rendered.sample_rate
+            )
+            output_path = os.path.join(
+                self.config.paths.temp_dir,
+                f"music_{self._session_id}_{index:02d}.wav",
+            )
+            rendered.export(output_path, format="wav")
+            self._session_temp_files.add(os.path.abspath(output_path))
+            rendered_items.append({
+                **segment,
+                "path": output_path,
+                "planned_duration_seconds": segment["duration_seconds"],
+                "duration_seconds": round(len(rendered) / 1000, 3),
+                "emotion": primary_emotion,
+                "source_file": filename,
+                "source_duration_seconds": round(len(original) / 1000, 2),
+                "filename_tags": tags,
+                "music_features": {
+                    "tempo_bpm": 0.0,
+                    "tempo_label": "未分析",
+                    "rms": 0.0,
+                    "energy_label": {
+                        "light": "较轻", "standard": "标准", "strong": "较强",
+                    }.get(loudness, "自动"),
+                    "spectral_centroid_hz": 0.0,
+                    "brightness_label": "未分析",
+                    "dynamic_label": "未分析",
+                    "energy_trajectory": "按用户设置",
+                },
+                "music_source": "private_library",
+                "provider": "user_upload",
+                "model": None,
+                "generation_prompt": "",
+                "prompt_source": None,
+                "target_duration_seconds": segment["duration_seconds"],
+            })
+        return rendered_items
     
 
     @staticmethod
@@ -1291,6 +1393,7 @@ class MeditationApp:
         prepared_plan: Optional[Dict] = None,
         guidance_style: str = "auto",
         language_density: str = "balanced",
+        selected_music: Optional[Dict] = None,
     ) -> Tuple[str, Dict]:
         """
         创建完整的冥想会话
@@ -1390,7 +1493,8 @@ class MeditationApp:
                 )
             else:
                 music_info = self.generate_music(
-                    prompts_data["music_prompts"], emotion_journey
+                    prompts_data["music_prompts"], emotion_journey,
+                    selected_music=selected_music,
                 )
 
             # 3. 根据已选音乐的情绪、内容特征和时长生成逐段引导词

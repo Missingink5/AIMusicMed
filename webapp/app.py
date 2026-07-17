@@ -24,6 +24,9 @@ from tencentcloud.ses.v20201002 import models, ses_client
 
 from .config import Settings
 from .db import Database
+from .operations import (
+    _disk_status, consume_admin_action_token, create_operations_router, record_admin_audit,
+)
 from .security import (
     SecretBox, hash_password, new_token, token_hash, verification_code,
     verification_code_hash, verify_password,
@@ -105,6 +108,8 @@ class PlanInput(BaseModel):
     voice_mode: Literal["tts", "pure_music"] = "tts"
     guidance_style: str = Field(default="auto", min_length=1, max_length=40)
     language_density: Literal["balanced", "less_language"] = "balanced"
+    selected_voice_id: str | None = Field(default=None, max_length=256)
+    selected_music_asset_id: str | None = Field(default=None, max_length=64)
 
 
 class PlanDraftCreateInput(BaseModel):
@@ -122,6 +127,8 @@ class PlanDraftPatchInput(BaseModel):
     voice_mode: Literal["tts", "pure_music"] | None = None
     guidance_style: str | None = Field(default=None, min_length=1, max_length=40)
     language_density: Literal["balanced", "less_language"] | None = None
+    selected_voice_id: str | None = Field(default=None, max_length=256)
+    selected_music_asset_id: str | None = Field(default=None, max_length=64)
 
 
 class CredentialInput(BaseModel):
@@ -462,6 +469,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except (TencentCloudSDKException, OSError, ValueError) as exc:
             raise ApiError("email_delivery_failed", "邮件发送失败，请稍后重试", 503) from exc
 
+    def send_alert_email(recipient: str, title: str, message: str) -> bool:
+        if settings.dev_auth_codes or not settings.ses_alert_template_id:
+            return False
+        if not all((
+            settings.tencentcloud_secret_id,
+            settings.tencentcloud_secret_key,
+            settings.tencentcloud_region,
+            settings.ses_from,
+        )):
+            return False
+        try:
+            cred = credential.Credential(
+                settings.tencentcloud_secret_id,
+                settings.tencentcloud_secret_key,
+            )
+            http_profile = HttpProfile()
+            http_profile.endpoint = "ses.tencentcloudapi.com"
+            client_profile = ClientProfile()
+            client_profile.httpProfile = http_profile
+            client = ses_client.SesClient(
+                cred, settings.tencentcloud_region, client_profile
+            )
+            request = models.SendEmailRequest()
+            request.from_json_string(json.dumps({
+                "FromEmailAddress": settings.ses_from,
+                "Destination": [recipient],
+                "Subject": f"AIMusicMed 关键告警：{title}",
+                "Template": {
+                    "TemplateID": settings.ses_alert_template_id,
+                    "TemplateData": json.dumps({
+                        "title": title,
+                        "message": message,
+                        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }, ensure_ascii=False),
+                },
+            }))
+            client.SendEmail(request)
+            return True
+        except (TencentCloudSDKException, OSError, ValueError):
+            return False
+
+    def admin_alert(key: str, title: str, message: str) -> None:
+        now = _now()
+        with db.transaction(immediate=True) as conn:
+            setting_key = f"admin_alert:{key}"
+            previous = conn.execute(
+                "SELECT value FROM operations_settings WHERE key=?", (setting_key,)
+            ).fetchone()
+            if previous and now - int(previous["value"]) < 6 * 3600:
+                return
+            admin = conn.execute(
+                "SELECT id,email FROM users WHERE role='admin' AND status='active' "
+                "ORDER BY created_at LIMIT 1"
+            ).fetchone()
+            if not admin:
+                return
+            conn.execute(
+                "INSERT INTO operations_settings(key,value,updated_at,updated_by) "
+                "VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,"
+                "updated_at=excluded.updated_at,updated_by=excluded.updated_by",
+                (setting_key, str(now), now, admin["id"]),
+            )
+            conn.execute(
+                "INSERT INTO notifications(id,user_id,title,body,kind,dedupe_key,created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (_id(), admin["id"], title, message, "warning", setting_key, now),
+            )
+        send_alert_email(admin["email"], title, message)
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
@@ -547,12 +623,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"items": [dict(row) for row in rows]}
 
     @app.patch("/admin/users/{user_id}/quota")
-    def admin_user_quota(user_id: str, body: QuotaInput, _admin=Depends(admin_user)):
+    def admin_user_quota(
+        user_id: str, body: QuotaInput, request: Request,
+        action_token: Annotated[str | None, Header(alias="X-Admin-Action-Token")] = None,
+        admin=Depends(admin_user),
+    ):
         with db.transaction(immediate=True) as conn:
+            consume_admin_action_token(conn, admin, action_token, "adjust_user_quota", ApiError)
             changed = conn.execute(
                 "UPDATE users SET daily_limit=? WHERE id=? AND role='user'",
                 (body.daily_limit, user_id),
             ).rowcount
+            if changed:
+                record_admin_audit(
+                    conn, request, admin, settings, "adjust_user_quota", "user", user_id,
+                    {"daily_limit": body.daily_limit},
+                )
         if not changed:
             raise ApiError("user_not_found", "用户不存在", 404)
         return {"daily_limit": body.daily_limit}
@@ -575,9 +661,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return result
 
     @app.patch("/admin/users/{user_id}/status")
-    def admin_user_status(user_id: str, body: UserStatusInput, _admin=Depends(admin_user)):
+    def admin_user_status(
+        user_id: str, body: UserStatusInput, request: Request,
+        action_token: Annotated[str | None, Header(alias="X-Admin-Action-Token")] = None,
+        admin=Depends(admin_user),
+    ):
         now = _now()
         with db.transaction(immediate=True) as conn:
+            consume_admin_action_token(conn, admin, action_token, "change_user_status", ApiError)
             user = conn.execute("SELECT * FROM users WHERE id=? AND role='user'", (user_id,)).fetchone()
             if not user:
                 raise ApiError("user_not_found", "用户不存在", 404)
@@ -592,6 +683,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "UPDATE verification_codes SET used_at=? WHERE user_id=? AND used_at IS NULL",
                     (now, user_id),
                 )
+            record_admin_audit(
+                conn, request, admin, settings, "change_user_status", "user", user_id,
+                {"status": body.status},
+            )
         return {"status": body.status}
 
     @app.post("/auth/code/request")
@@ -671,10 +766,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"authenticated": True, "password_setup": setup}
 
     @app.post("/auth/password/login")
-    def password_login(body: PasswordLoginInput, response: Response):
+    def password_login(body: PasswordLoginInput, request: Request, response: Response):
         email, now = _email(body.email), _now()
+        email_hash, ip_hash = auth_keys(email, request)
         invalid = False
         with db.transaction(immediate=True) as conn:
+            if rate_limited(conn, "password_login", email_hash, ip_hash, now):
+                raise ApiError("password_rate_limited", "密码登录尝试过于频繁，请稍后再试或使用邮箱验证码", 429)
             user = conn.execute("SELECT * FROM users WHERE email=? AND status='active'", (email,)).fetchone()
             stored_hash = user["password_hash"] if user and user["password_hash"] else dummy_password_hash
             password_ok = verify_password(stored_hash, body.password)
@@ -693,13 +791,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 conn.execute(
                     "UPDATE users SET password_failed_attempts=0,password_locked_until=NULL WHERE id=?", (user["id"],)
                 )
+            record_event(conn, "password_login", email_hash, ip_hash, now)
         if invalid:
             raise ApiError("invalid_credentials", "邮箱或密码错误", 401)
         set_session(response, user["id"])
         return {"authenticated": True, "password_setup": "none"}
 
     @app.put("/account/password")
-    def set_account_password(body: PasswordInput, user=Depends(current_user)):
+    def set_account_password(body: PasswordInput, request: Request, user=Depends(current_user)):
         if not hmac.compare_digest(body.password, body.password_confirmation):
             raise ApiError("password_confirmation_mismatch", "两次输入的密码不一致", 422)
         if user["password_hash"] and (
@@ -710,6 +809,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conn.execute(
                 "UPDATE users SET password_hash=?,password_failed_attempts=0,password_locked_until=NULL WHERE id=?",
                 (hash_password(body.password), user["id"]),
+            )
+            # Invalidate all other sessions so a stolen session cannot survive
+            # the legitimate user's password-change containment action.
+            conn.execute(
+                "DELETE FROM sessions WHERE user_id=? AND token_hash!=?",
+                (user["id"], token_hash(request.cookies.get(SESSION_COOKIE, ""))),
             )
         return {"password_configured": True}
 
@@ -889,7 +994,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ).fetchall()
             plans = conn.execute(
                 "SELECT id,message_id,draft_id,duration_minutes,music_source,target_emotion,credential_mode,voice_mode,"
-                "guidance_style,language_density,status,created_at "
+                "guidance_style,language_density,selected_voice_id,selected_music_asset_id,status,created_at "
                 "FROM plans WHERE conversation_id=? ORDER BY created_at,id",
                 (conversation_id,),
             ).fetchall()
@@ -972,16 +1077,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ).fetchone()
             if existing and existing["locked_at"] is not None:
                 raise ApiError("plan_draft_locked", "该方案已经开始生成，请复制设置到新会话", 409)
+            selected_music_asset_id = (
+                existing["selected_music_asset_id"] if existing else None
+            )
+            if suggestion["music_source"] == "library" and not selected_music_asset_id:
+                recommended = conn.execute(
+                    "SELECT id FROM media_assets WHERE deleted_at IS NULL AND status='ready' "
+                    "AND kind IN ('private_music','public_music') "
+                    "AND (owner_user_id=? OR visibility='public') "
+                    "ORDER BY CASE WHEN owner_user_id=? THEN 0 ELSE 1 END,"
+                    "CASE WHEN primary_emotion=? THEN 0 ELSE 1 END,created_at DESC LIMIT 1",
+                    (user["id"], user["id"], suggestion["primary_emotion"]),
+                ).fetchone()
+                selected_music_asset_id = recommended["id"] if recommended else None
+            elif suggestion["music_source"] != "library":
+                selected_music_asset_id = None
             if existing:
                 conn.execute(
                     "UPDATE plan_drafts SET summary=?,primary_emotion=?,emotion_path=?,duration_minutes=?,"
                     "music_source=?,target_emotion=?,credential_mode=?,voice_mode=?,guidance_style=?,"
-                    "language_density=?,updated_at=? WHERE conversation_id=?",
+                    "language_density=?,selected_music_asset_id=?,updated_at=? WHERE conversation_id=?",
                     (
                         suggestion["summary"], suggestion["primary_emotion"], suggestion["emotion_path"],
                         suggestion["duration_minutes"], suggestion["music_source"], suggestion["target_emotion"],
                         body.credential_mode, suggestion["voice_mode"], suggestion["guidance_style"],
-                        suggestion["language_density"], now, conversation_id,
+                        suggestion["language_density"], selected_music_asset_id, now, conversation_id,
                     ),
                 )
                 draft_id = existing["id"]
@@ -990,12 +1110,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 conn.execute(
                     "INSERT INTO plan_drafts(id,conversation_id,summary,primary_emotion,emotion_path,"
                     "duration_minutes,music_source,target_emotion,credential_mode,voice_mode,guidance_style,"
-                    "language_density,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "language_density,selected_music_asset_id,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         draft_id, conversation_id, suggestion["summary"], suggestion["primary_emotion"],
                         suggestion["emotion_path"], suggestion["duration_minutes"], suggestion["music_source"],
                         suggestion["target_emotion"], body.credential_mode, suggestion["voice_mode"],
-                        suggestion["guidance_style"], suggestion["language_density"], now, now,
+                        suggestion["guidance_style"], suggestion["language_density"],
+                        selected_music_asset_id, now, now,
                     ),
                 )
             draft = conn.execute("SELECT * FROM plan_drafts WHERE id=?", (draft_id,)).fetchone()
@@ -1052,7 +1174,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "voice_mode": body.voice_mode,
                 "guidance_style": body.guidance_style,
                 "language_density": body.language_density,
+                "selected_voice_id": body.selected_voice_id,
+                "selected_music_asset_id": body.selected_music_asset_id,
             }
+            draft_primary_emotion = None
             if body.draft_id:
                 existing_plan = conn.execute(
                     "SELECT id,status FROM plans WHERE draft_id=? AND conversation_id=?",
@@ -1069,21 +1194,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ).fetchone()
                 if not draft:
                     raise ApiError("plan_draft_not_found", "方案草稿不存在", 404)
+                draft_primary_emotion = draft["primary_emotion"]
                 for field in plan_values:
                     plan_values[field] = draft[field]
             if plan_values["credential_mode"] == "byok":
                 credential = conn.execute("SELECT 1 FROM credentials WHERE user_id=?", (user["id"],)).fetchone()
                 if not credential:
                     raise ApiError("byok_not_configured", "请先配置 DeepSeek 和 MiniMax API Key", 409)
+            if plan_values["voice_mode"] == "pure_music":
+                plan_values["selected_voice_id"] = None
+            else:
+                plan_values["selected_voice_id"] = (
+                    plan_values["selected_voice_id"] or "female-chengshu-jingpin"
+                )
+                if plan_values["selected_voice_id"] != "female-chengshu-jingpin":
+                    voice = conn.execute(
+                        "SELECT 1 FROM voice_clones WHERE id=? AND user_id=? AND status='ready' "
+                        "AND disabled_at IS NULL",
+                        (plan_values["selected_voice_id"], user["id"]),
+                    ).fetchone()
+                    if not voice:
+                        raise ApiError("voice_not_available", "所选音色不可用", 409)
+            if (
+                plan_values["music_source"] == "library"
+                and not plan_values["selected_music_asset_id"]
+            ):
+                preferred_emotion = (
+                    draft_primary_emotion
+                    if plan_values["target_emotion"] == "auto"
+                    else plan_values["target_emotion"]
+                )
+                recommended = conn.execute(
+                    "SELECT id FROM media_assets WHERE deleted_at IS NULL AND status='ready' "
+                    "AND kind IN ('private_music','public_music') "
+                    "AND (owner_user_id=? OR visibility='public') "
+                    "ORDER BY CASE WHEN owner_user_id=? THEN 0 ELSE 1 END,"
+                    "CASE WHEN primary_emotion=? THEN 0 ELSE 1 END,created_at DESC LIMIT 1",
+                    (user["id"], user["id"], preferred_emotion),
+                ).fetchone()
+                plan_values["selected_music_asset_id"] = (
+                    recommended["id"] if recommended else None
+                )
+            if plan_values["selected_music_asset_id"]:
+                asset = conn.execute(
+                    "SELECT 1 FROM media_assets WHERE id=? AND deleted_at IS NULL AND status='ready' "
+                    "AND kind IN ('private_music','public_music') "
+                    "AND (owner_user_id=? OR visibility='public')",
+                    (plan_values["selected_music_asset_id"], user["id"]),
+                ).fetchone()
+                if not asset:
+                    raise ApiError("music_asset_not_available", "所选音乐不可用", 409)
             conn.execute(
                 "INSERT INTO plans(id,conversation_id,message_id,duration_minutes,music_source,target_emotion,"
-                "credential_mode,voice_mode,guidance_style,language_density,draft_id,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "credential_mode,voice_mode,guidance_style,language_density,selected_voice_id,"
+                "selected_music_asset_id,draft_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     plan_id, conversation_id, body.message_id, plan_values["duration_minutes"],
                     plan_values["music_source"], plan_values["target_emotion"],
                     plan_values["credential_mode"], plan_values["voice_mode"],
-                    plan_values["guidance_style"], plan_values["language_density"], body.draft_id, now,
+                    plan_values["guidance_style"], plan_values["language_density"],
+                    plan_values["selected_voice_id"], plan_values["selected_music_asset_id"],
+                    body.draft_id, now,
                 ),
             )
             if body.draft_id:
@@ -1170,6 +1341,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def enqueue_job(plan_id: str | None, user, retry_of_job_id: str | None = None):
         job_id, now = _id(), _now()
+        if not _disk_status(settings)["generation_allowed"]:
+            admin_alert(
+                "disk_generation_stop",
+                "磁盘保护已停止生成",
+                "磁盘使用率达到 90% 或仍处于保护状态；低于 75% 后自动恢复。",
+            )
+            raise ApiError("storage_protected", "存储空间达到临界值，暂时停止生成", 507)
         relpath = f"users/{user['id']}/jobs/{job_id}/meditation.wav"
         day_start = ((now + 8 * 3600) // 86400) * 86400 - 8 * 3600
         with db.transaction(immediate=True) as conn:
@@ -1218,11 +1396,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if used >= user["daily_limit"]:
                     raise ApiError("daily_limit_reached", "今日生成额度已用完", 429)
             conn.execute(
-                "INSERT INTO jobs(id,user_id,plan_id,status,credential_mode,output_relpath,created_at,retry_of_job_id) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO jobs(id,user_id,plan_id,status,credential_mode,output_relpath,created_at,retry_of_job_id,"
+                "selected_voice_id,selected_music_asset_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     job_id, user["id"], plan_id, "queued", plan["credential_mode"], relpath, now,
-                    retry_of_job_id,
+                    retry_of_job_id, plan["selected_voice_id"], plan["selected_music_asset_id"],
                 ),
             )
             conn.execute(
@@ -1390,7 +1568,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             payload = conn.execute(
                 "SELECT j.*,p.conversation_id,p.message_id,p.duration_minutes,p.music_source,p.target_emotion,"
-                "p.voice_mode,p.guidance_style,p.language_density,m.content "
+                "p.voice_mode,p.guidance_style,p.language_density,p.selected_voice_id,"
+                "p.selected_music_asset_id,m.content "
                 "FROM jobs j JOIN plans p ON p.id=j.plan_id JOIN messages m ON m.id=p.message_id WHERE j.id=?",
                 (job["id"],),
             ).fetchone()
@@ -1403,6 +1582,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             credential = None
             if payload["credential_mode"] == "byok":
                 credential = conn.execute("SELECT * FROM credentials WHERE user_id=?", (payload["user_id"],)).fetchone()
+            selected_voice_provider_id = payload["selected_voice_id"]
+            if selected_voice_provider_id and selected_voice_provider_id != "female-chengshu-jingpin":
+                voice = conn.execute(
+                    "SELECT provider_voice_id FROM voice_clones WHERE id=? AND user_id=? "
+                    "AND status IN ('ready','disabled')",
+                    (selected_voice_provider_id, payload["user_id"]),
+                ).fetchone()
+                if not voice:
+                    raise ApiError("voice_not_available", "selected voice is not available", 409)
+                selected_voice_provider_id = voice["provider_voice_id"]
+            selected_music = None
+            if payload["selected_music_asset_id"]:
+                music = conn.execute(
+                    "SELECT storage_relpath,filename,primary_emotion,edit_params_json "
+                    "FROM media_assets WHERE id=? AND deleted_at IS NULL "
+                    "AND status='ready' AND (owner_user_id=? OR visibility='public')",
+                    (payload["selected_music_asset_id"], payload["user_id"]),
+                ).fetchone()
+                if not music:
+                    raise ApiError("music_asset_not_available", "selected music is not available", 409)
+                tags = conn.execute(
+                    "SELECT tag FROM media_asset_tags WHERE asset_id=? ORDER BY tag",
+                    (payload["selected_music_asset_id"],),
+                ).fetchall()
+                selected_music = {
+                    "path": str(safe_storage_path(settings.storage_root, music["storage_relpath"])),
+                    "name": music["filename"],
+                    "primary_emotion": music["primary_emotion"],
+                    "tags": [tag["tag"] for tag in tags],
+                    "edit": json.loads(music["edit_params_json"] or "{}"),
+                }
         output_path = safe_storage_path(settings.storage_root, payload["output_relpath"])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         generation_context = "\n".join(
@@ -1416,6 +1626,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "target_emotion": payload["target_emotion"], "credential_mode": payload["credential_mode"],
             "voice_mode": payload["voice_mode"], "guidance_style": payload["guidance_style"],
             "language_density": payload["language_density"],
+            "selected_voice_id": payload["selected_voice_id"],
+            "provider_voice_id": selected_voice_provider_id,
+            "selected_music_asset_id": payload["selected_music_asset_id"],
+            "selected_music": selected_music,
             "output_path": str(output_path),
         }
         if credential:
@@ -1480,13 +1694,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "INSERT INTO job_events(job_id,event_type,stage,message,created_at) VALUES(?,?,?,?,?)",
                 (job_id, "status", "complete", "音乐冥想已完成", now),
             )
+            conn.execute(
+                "INSERT INTO notifications(id,user_id,title,body,kind,dedupe_key,created_at)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (_id(), job["user_id"], "生成完成", "你的音乐冥想已经生成完成。", "success",
+                 f"job-complete:{job_id}", now),
+            )
         return {"work_id": work_id}
 
     @app.post("/internal/worker/jobs/{job_id}/fail", dependencies=[Depends(worker_auth)])
     def worker_fail(job_id: str, body: WorkerFailInput):
         now = _now()
         with db.transaction(immediate=True) as conn:
-            job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+            job = conn.execute("SELECT status,user_id FROM jobs WHERE id=?", (job_id,)).fetchone()
             if not job or job["status"] not in ("running", "cancel_requested"):
                 raise ApiError("worker_job_not_active", "job is not active", 409)
             final_status = "cancelled" if job["status"] == "cancel_requested" else "failed"
@@ -1498,11 +1718,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "INSERT INTO job_events(job_id,event_type,stage,message,created_at) VALUES(?,?,?,?,?)",
                 (job_id, "status", final_status, "任务已取消" if final_status == "cancelled" else "生成失败", now),
             )
+            if final_status == "failed":
+                conn.execute(
+                    "INSERT INTO notifications(id,user_id,title,body,kind,dedupe_key,created_at)"
+                    " VALUES(?,?,?,?,?,?,?)",
+                    (_id(), job["user_id"], "生成失败", "任务未能完成，请稍后重试。", "warning",
+                     f"job-failed:{job_id}", now),
+                )
         return {"status": final_status}
 
     @app.get("/works")
     def list_works(favorites_only: bool = False, user=Depends(current_user)):
-        clauses = ["user_id=?"]
+        clauses = ["user_id=?", "deleted_at IS NULL"]
         params: list[object] = [user["id"]]
         if favorites_only:
             clauses.append("is_favorite=1")
@@ -1530,7 +1757,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def download_work(work_id: str, format: Literal["wav", "mp3", "txt"] = "mp3", user=Depends(current_user)):
         with db.connection() as conn:
             work = conn.execute("SELECT * FROM works WHERE id=?", (work_id,)).fetchone()
-        if not work or work["user_id"] != user["id"]:
+        if not work or work["user_id"] != user["id"] or work["deleted_at"] is not None:
             raise ApiError("work_not_found", "作品不存在", 404)
         if format != "txt" and not work["is_favorite"] and work["expires_at"] is not None and work["expires_at"] <= _now():
             raise ApiError("audio_expired", "音频已过期或不存在", 410)
@@ -1552,7 +1779,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def set_favorite(work_id: str, user_id: str, value: bool):
         with db.transaction(immediate=True) as conn:
             work = conn.execute(
-                "SELECT * FROM works WHERE id=? AND user_id=?", (work_id, user_id)
+                "SELECT * FROM works WHERE id=? AND user_id=? AND deleted_at IS NULL", (work_id, user_id)
             ).fetchone()
             if not work:
                 raise ApiError("work_not_found", "作品不存在", 404)
@@ -1569,6 +1796,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return {"is_favorite": value}
 
+    app.include_router(create_operations_router(
+        db=db,
+        settings=settings,
+        current_user=current_user,
+        admin_user=admin_user,
+        worker_auth=worker_auth,
+        send_email=send_email,
+        admin_alert=admin_alert,
+        secrets=secrets,
+        error=ApiError,
+    ))
     return app
 
 

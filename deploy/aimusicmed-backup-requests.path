@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch AIMusicMed backup request queue
+
+[Path]
+PathExistsGlob=/opt/aimusicmed/backups/requests/pending/*.json
+Unit=aimusicmed-backup-requests.service
+
+[Install]
+WantedBy=multi-user.target

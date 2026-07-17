@@ -17,6 +17,12 @@ import requests
 
 from audio_compat import AudioSegment
 
+# Hard ceiling on provider response bodies to prevent uncontrolled memory
+# allocation from a malfunctioning or compromised upstream service.
+# 200 MiB is >10× the largest legitimate 15-minute 320 kbps audio payload.
+_MAX_PROVIDER_RESPONSE_BYTES = 200 * 1024 * 1024
+_MAX_DECODED_DURATION_SECONDS = 3600  # 1 hour — far above any supported plan
+
 
 class MusicGenerationError(RuntimeError):
     """A provider failure with an explicit fallback classification."""
@@ -80,6 +86,12 @@ def _write_validated_wav(
             provider=provider,
             recoverable=True,
         )
+    if len(audio_bytes) > _MAX_PROVIDER_RESPONSE_BYTES:
+        raise MusicGenerationError(
+            f"{provider} response exceeds {_MAX_PROVIDER_RESPONSE_BYTES:,d} byte ceiling",
+            provider=provider,
+            recoverable=True,
+        )
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +141,13 @@ def _write_validated_wav(
         if len(verified) <= 0:
             raise MusicGenerationError(
                 f"{provider} normalized WAV has no playable frames",
+                provider=provider,
+                recoverable=True,
+            )
+        actual_duration_s = len(verified) / 1000.0
+        if actual_duration_s > _MAX_DECODED_DURATION_SECONDS:
+            raise MusicGenerationError(
+                f"{provider} decoded duration {actual_duration_s:.0f}s exceeds ceiling",
                 provider=provider,
                 recoverable=True,
             )
@@ -222,6 +241,18 @@ class ElevenLabsMusicBackend(MusicGenerationBackend):
         except requests.RequestException as exc:
             raise _request_error(self.provider, exc) from exc
 
+        content_length = response.headers.get("Content-Length")
+        try:
+            if content_length is not None and int(content_length) > _MAX_PROVIDER_RESPONSE_BYTES:
+                raise MusicGenerationError(
+                    f"ElevenLabs response Content-Length {content_length} exceeds ceiling",
+                    provider=self.provider,
+                    recoverable=True,
+                )
+        except (TypeError, ValueError):
+            # Content-Length absent, non-numeric, or mocked — checked at decode.
+            pass
+
         output, actual_duration = _write_validated_wav(
             response.content,
             output_path,
@@ -307,6 +338,16 @@ class MiniMaxMusicBackend(MusicGenerationBackend):
                 timeout=self.timeout_seconds,
             )
             response.raise_for_status()
+            content_length = response.headers.get("Content-Length")
+            try:
+                if content_length is not None and int(content_length) > _MAX_PROVIDER_RESPONSE_BYTES:
+                    raise MusicGenerationError(
+                        f"MiniMax music response Content-Length {content_length} exceeds ceiling",
+                        provider=self.provider,
+                        recoverable=True,
+                    )
+            except (TypeError, ValueError):
+                pass
             payload = response.json()
         except requests.RequestException as exc:
             raise _request_error(self.provider, exc) from exc

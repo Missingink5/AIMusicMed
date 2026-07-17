@@ -87,6 +87,14 @@ def synthesize_minimax(
                 timeout=timeout_seconds,
             )
             response.raise_for_status()
+            content_length = response.headers.get("Content-Length")
+            try:
+                if content_length is not None and int(content_length) > 200 * 1024 * 1024:
+                    raise MiniMaxTTSError(
+                        f"MiniMax TTS response Content-Length {content_length} exceeds ceiling"
+                    )
+            except (TypeError, ValueError):
+                pass
             payload = response.json()
             break
         except (requests.RequestException, ValueError) as exc:
@@ -122,8 +130,16 @@ def synthesize_minimax(
         raise MiniMaxTTSError("MiniMax TTS 返回的数据不是有效的 WAV 容器")
     try:
         with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
-            if wav_file.getnframes() <= 0 or wav_file.getnchannels() != 1:
+            frames = wav_file.getnframes()
+            if frames <= 0 or wav_file.getnchannels() != 1:
                 raise MiniMaxTTSError("MiniMax TTS WAV 必须包含有效的单声道音频")
+            # Reject unreasonably large declared frame counts that would
+            # cause memory exhaustion during downstream processing.
+            max_frames = wav_file.getframerate() * 300  # 5 minutes
+            if frames > max_frames:
+                raise MiniMaxTTSError(
+                    f"MiniMax TTS WAV 声明帧数 {frames} 超过安全上限 {max_frames}"
+                )
     except (wave.Error, EOFError) as exc:
         raise MiniMaxTTSError(f"MiniMax TTS WAV 无法解码: {exc}") from exc
 

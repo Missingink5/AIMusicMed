@@ -402,7 +402,9 @@ class SopPlanningTests(unittest.TestCase):
         script = [{"text": "引导", **app._public_music_manifest(music)[0]}]
         app.get_session_info = lambda *_: {}
         app.prepare_session_plan = lambda *_: events.append("detect_plan") or plan
-        app.generate_music = lambda *_: events.append("select_analyze_music") or music
+        app.generate_music = (
+            lambda *_, **__: events.append("select_analyze_music") or music
+        )
         app.generate_guidance_for_music = lambda *_, **__: events.append("generate_guidance") or script
 
         async def fake_tts(*_, **__):

@@ -9,6 +9,8 @@ import soundfile as sf
 import librosa
 from typing import Union
 
+from audio_mastering import equal_power_crossfade
+
 
 class AudioSegment:
     """
@@ -29,7 +31,28 @@ class AudioSegment:
     
     @classmethod
     def from_file(cls, file_path: str) -> 'AudioSegment':
-        """从文件加载音频"""
+        """Load audio from file with decoded-memory safeguards."""
+        import soundfile as _sf
+        try:
+            info = _sf.info(file_path)
+        except Exception:
+            # Fall back to librosa if soundfile cannot read the header.
+            info = None
+        if info is not None:
+            # Reject unreasonably high sample rates and channel counts
+            # before decoding the full file into memory.
+            if info.samplerate > 192000:
+                raise ValueError(f"不支持超过 192 kHz 的采样率: {info.samplerate}")
+            if info.channels > 8:
+                raise ValueError(f"不支持超过 8 个声道: {info.channels}")
+            decoded_frames = info.frames if info.frames > 0 else int(
+                info.duration * info.samplerate
+            )
+            max_frames = 192000 * 8 * 1800  # 8ch × 192kHz × 30min
+            if decoded_frames > max_frames:
+                raise ValueError(
+                    f"音频解码后帧数 ({decoded_frames}) 超过安全上限 ({max_frames})"
+                )
         try:
             data, sample_rate = librosa.load(file_path, sr=None, mono=False)
             # 如果是单声道，确保维度正确
@@ -37,7 +60,7 @@ class AudioSegment:
                 data = data.reshape(1, -1)
             elif data.ndim == 2 and data.shape[0] > data.shape[1]:
                 data = data.T  # 转置以确保形状为 (channels, samples)
-            
+
             return cls(data, sample_rate)
         except Exception as e:
             raise ValueError(f"无法加载音频文件 {file_path}: {e}")
@@ -123,9 +146,8 @@ class AudioSegment:
         overlap = min(requested, left.shape[1] // 2, right.shape[1] // 2)
         if overlap <= 0:
             return self + other
-        data = np.concatenate(
-            [left[:, :-overlap], left[:, -overlap:] + right[:, :overlap], right[:, overlap:]],
-            axis=1,
+        data = equal_power_crossfade(
+            left, right, self.sample_rate, overlap / self.sample_rate
         )
         return AudioSegment(data, self.sample_rate)
 

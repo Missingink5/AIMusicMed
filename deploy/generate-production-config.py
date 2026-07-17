@@ -83,9 +83,19 @@ def main() -> None:
     }
 
     args.output_env.parent.mkdir(parents=True, exist_ok=True)
-    args.output_env.write_text(
-        "\n".join(f"{key}={value}" for key, value in values.items()) + "\n",
-        encoding="utf-8",
+    content = "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
+    # Create the file atomically with private permissions (owner read/write only).
+    # The file contains every production secret — never let umask weaken this.
+    import tempfile as _tmp
+    fd, tmp_name = _tmp.mkstemp(
+        dir=str(args.output_env.parent), prefix=".env.", suffix=".tmp", text=True,
     )
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.chmod(tmp_name, 0o600)
+    os.replace(tmp_name, str(args.output_env))
 if __name__ == "__main__":
     main()

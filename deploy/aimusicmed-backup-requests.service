@@ -1,0 +1,17 @@
+[Unit]
+Description=Process AIMusicMed backup requests with host Docker authority
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment=AIMUSICMED_PROJECT_DIR=/opt/aimusicmed
+ExecStart=/opt/aimusicmed/deploy/backup-request-runner.sh
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/aimusicmed/backups /var/run/docker.sock
