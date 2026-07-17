@@ -282,7 +282,9 @@ def run_claim(client: WorkerClient, claim: dict) -> None:
         _export_artifacts(Path(source_wav), target_wav, session_info.get("guidance_text", ""))
         journey = session_info.get("emotion_journey") or ""
         duration = claim.get("duration_minutes", 0)
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        date_str = datetime.datetime.now(
+            datetime.timezone(datetime.timedelta(hours=8))
+        ).strftime("%Y-%m-%d")
         title = f"{date_str} · {duration}分钟 · {journey}" if journey else f"{date_str} · {duration}分钟冥想"
         client.post(f"/internal/worker/jobs/{job_id}/complete", {"title": title})
     except Exception as exc:
@@ -297,14 +299,28 @@ def run_claim(client: WorkerClient, claim: dict) -> None:
 
 def cleanup_expired(settings: Settings) -> int:
     db = Database(settings.database_path)
+    now = int(time.time())
     removed = 0
     with db.transaction(immediate=True) as conn:
-        Database.purge_expired_conversations(conn, int(time.time()))
+        # Expire old conversations and orphaned works.
+        Database.purge_expired_conversations(conn, now)
         rows = conn.execute(
             "SELECT file_relpath,mp3_relpath FROM works "
             "WHERE is_favorite=0 AND expires_at IS NOT NULL AND expires_at<=?",
-            (int(time.time()),),
+            (now,),
         ).fetchall()
+        # Clean up stale ephemeral records that never get purged otherwise.
+        conn.execute("DELETE FROM sessions WHERE expires_at<=?", (now,))
+        conn.execute("DELETE FROM verification_codes WHERE expires_at<=?", (now,))
+        conn.execute("DELETE FROM password_reset_tokens WHERE expires_at<=?", (now,))
+        conn.execute(
+            "DELETE FROM auth_events WHERE created_at<?",
+            (now - 86400 * 7,),
+        )
+        conn.execute(
+            "DELETE FROM admin_sensitive_grants WHERE expires_at<=?",
+            (now,),
+        )
     for row in rows:
         for relpath in row:
             if relpath:

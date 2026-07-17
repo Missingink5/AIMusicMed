@@ -24,7 +24,6 @@
 	}
 
 	# Cache hashed static assets aggressively (vinext filenames include content hash).
-	# HTML stays uncached so users always get the latest app shell.
 	@staticAssets {
 		path /assets/* /favicon.ico /manifest.webmanifest /sw.js /og.png
 	}
@@ -35,6 +34,7 @@
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), geolocation=(), microphone=(self)"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:; font-src 'self'"
 		-Server
 	}
 

@@ -96,6 +96,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   const [completionUnread, setCompletionUnread] = useState(false);
   const [track, setTrack] = useState<PlayerTrack>(null);
   const [favoriteWorks, setFavoriteWorks] = useState<WorkSummary[]>([]);
+  const voiceCache = useRef<VoiceAsset[]>([]);
+  const trackCache = useRef<MusicTrack[]>([]);
   const polling = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollNow = useRef<(() => void) | null>(null);
   const pollingBusy = useRef(false);
@@ -109,8 +111,10 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
       api.listConversations(),
       api.listConversations(true),
     ]);
-    setConversations(active.items.filter((item) => !item.deleted_at));
+    const activeItems = active.items.filter((item) => !item.deleted_at);
+    setConversations(activeItems);
     setTrash(deleted.items.filter((item) => Boolean(item.deleted_at)));
+    return activeItems;
   }, []);
 
   const notifyComplete = useCallback(() => {
@@ -280,10 +284,17 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
           setView("account");
           return;
         }
-        await refreshHistory();
-        const active = await api.listConversations();
-        if (active.items[0]) await loadConversation(active.items[0].id);
+        const active = await refreshHistory();
+        if (active[0]) await loadConversation(active[0].id);
         if (setup === "optional") setView("account");
+        // Preload voice/track lists once so PlanCard doesn't re-fetch on mount.
+        api.listVoices().then((v) => {
+          voiceCache.current = v.items.filter((voice) => voice.status === "ready");
+        }).catch(() => undefined);
+        Promise.all([api.listMusicTracks("private"), api.listMusicTracks("public")])
+          .then(([priv, pub]) => {
+            trackCache.current = [...priv.items, ...pub.items];
+          }).catch(() => undefined);
       } catch (reason) {
         const apiError = reason as ApiError;
         if (apiError.code === "authentication_required")
@@ -1114,6 +1125,8 @@ function ChatView({
                   setPlan={setPlan}
                   onStart={startJob}
                   starting={starting}
+                  voiceCache={voiceCache.current}
+                  trackCache={trackCache.current}
                 />
               )}
               {jobState === "running" && (
@@ -1196,10 +1209,18 @@ function PlanCard({
   setPlan: (plan: PlanDraft) => void;
   onStart: () => void;
   starting: boolean;
+  voiceCache: VoiceAsset[];
+  trackCache: MusicTrack[];
 }) {
-  const [availableVoices, setAvailableVoices] = useState<VoiceAsset[]>([]);
-  const [availableTracks, setAvailableTracks] = useState<MusicTrack[]>([]);
+  const availableVoices = voiceCache.length
+    ? voiceCache
+    : [];
+  const availableTracks = trackCache.length
+    ? trackCache
+    : [];
   useEffect(() => {
+    // Only fetch if cache is empty (first visit to PlanCard).
+    if (voiceCache.length || trackCache.length) return;
     let cancelled = false;
     void Promise.all([
       api.listVoices(),
@@ -1207,17 +1228,15 @@ function PlanCard({
       api.listMusicTracks("public"),
     ]).then(([voices, privateTracks, publicTracks]) => {
       if (cancelled) return;
-      setAvailableVoices(
-        voices.items.filter((voice) => voice.status === "ready"),
-      );
-      setAvailableTracks([...privateTracks.items, ...publicTracks.items]);
+      voiceCache.splice(0, voiceCache.length, ...voices.items.filter((voice) => voice.status === "ready"));
+      trackCache.splice(0, trackCache.length, ...privateTracks.items, ...publicTracks.items);
     }).catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, []);
   const field = <K extends keyof PlanDraft>(key: K, value: PlanDraft[K]) =>
-    setPlan({ ...plan, [key]: value });
+    setPlan((prev) => ({ ...prev, [key]: value }));
   return (
     <section className="plan-card phase-two-plan">
       <header>
@@ -1686,11 +1705,16 @@ function ActiveGlobalPlayer({
   const [error, setError] = useState("");
 
   useEffect(() => {
+    let lastWritten = -1;
     const id = setInterval(() => {
-      const current = audioRef.current?.currentTime ?? currentTimeRef.current;
+      const audio = audioRef.current;
+      if (!audio || audio.paused) return;
+      const pos = Math.floor(audio.currentTime);
+      if (pos === lastWritten) return;
+      lastWritten = pos;
       window.localStorage.setItem(
         `aimusicmed:position:${track.workId}`,
-        String(current),
+        String(audio.currentTime),
       );
     }, 3000);
     return () => clearInterval(id);

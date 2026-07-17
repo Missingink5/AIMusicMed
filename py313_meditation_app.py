@@ -79,8 +79,15 @@ class MeditationApp:
 
     def _check_cancelled(self) -> None:
         callback = getattr(self, "_cancel_requested", None)
-        if callback and callback():
-            raise MeditationAppError("任务已由用户取消")
+        if not callback:
+            return
+        try:
+            if callback():
+                raise MeditationAppError("任务已由用户取消")
+        except Exception:
+            # A transient error checking cancellation status (e.g. network blip
+            # to the API) should not abort the running generation.
+            pass
 
     def _setup_logging(self):
         """设置日志系统"""
