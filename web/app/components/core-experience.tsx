@@ -89,6 +89,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   const [jobCreatedAt, setJobCreatedAt] = useState<number | null>(null);
   const [jobEvents, setJobEvents] = useState<JobEvent[]>([]);
   const [workId, setWorkId] = useState<string | null>(null);
+  const [workTitle, setWorkTitle] = useState("我的音乐冥想");
   const [workFavorite, setWorkFavorite] = useState(false);
   const [failure, setFailure] = useState("");
   const [notifyOnComplete, setNotifyOnComplete] = useState(false);
@@ -170,6 +171,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
             const detail = await api.getConversation(ownerConversationId);
             const completed = detail.jobs.find((item) => item.id === id);
             setWorkId(completed?.work_id ?? null);
+            setWorkTitle(completed?.work_title || "我的音乐冥想");
             setWorkFavorite(Boolean(completed?.is_favorite));
             notifyComplete();
             await refreshHistory();
@@ -732,7 +734,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
                 "aimusicmed:last-completion-seen",
                 String(Math.floor(Date.now() / 1000)),
               );
-              setTrack({ workId: id, title: "我的音乐冥想" });
+              setTrack({ workId: id, title: workTitle });
             }}
             notifyOnComplete={notifyOnComplete}
             setNotifyOnComplete={async (enabled) => {
