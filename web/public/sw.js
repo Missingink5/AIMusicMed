@@ -1,4 +1,34 @@
-const CACHE="aimusicmed-shell-v1";const SHELL=["/","/login","/app","/manifest.webmanifest"];
-self.addEventListener("install",event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL))));
-self.addEventListener("activate",event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key))))));
-self.addEventListener("fetch",event=>{if(event.request.method!=="GET"||new URL(event.request.url).pathname.startsWith("/api/"))return;event.respondWith(fetch(event.request).then(response=>{if(response.ok&&event.request.url.startsWith(self.location.origin))caches.open(CACHE).then(cache=>cache.put(event.request,response.clone()));return response}).catch(()=>caches.match(event.request).then(cached=>cached||caches.match("/"))))});
+/* Self-destructing Service Worker — v2.
+   This worker exists only to clean up the broken v1 worker that cached
+   authenticated pages and cloned already-used response bodies.
+   Once old caches are deleted, it unregisters itself so no worker
+   intercepts fetch until a proper caching strategy is designed. */
+
+const LEGACY_CACHES = ["aimusicmed-shell-v1"];
+
+self.addEventListener("install", function () {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", function (event) {
+  event.waitUntil(
+    caches
+      .keys()
+      .then(function (keys) {
+        return Promise.all(
+          keys
+            .filter(function (key) {
+              return LEGACY_CACHES.includes(key) || key.startsWith("aimusicmed-");
+            })
+            .map(function (key) {
+              return caches.delete(key);
+            }),
+        );
+      })
+      .then(function () {
+        return self.registration.unregister();
+      }),
+  );
+});
+
+/* Do NOT intercept any fetch requests. */

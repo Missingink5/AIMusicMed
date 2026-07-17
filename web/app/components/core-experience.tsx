@@ -96,8 +96,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   const [completionUnread, setCompletionUnread] = useState(false);
   const [track, setTrack] = useState<PlayerTrack>(null);
   const [favoriteWorks, setFavoriteWorks] = useState<WorkSummary[]>([]);
-  const voiceCache = useRef<VoiceAsset[]>([]);
-  const trackCache = useRef<MusicTrack[]>([]);
+  const [availableVoices, setAvailableVoices] = useState<VoiceAsset[]>([]);
+  const [availableTracks, setAvailableTracks] = useState<MusicTrack[]>([]);
   const polling = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollNow = useRef<(() => void) | null>(null);
   const pollingBusy = useRef(false);
@@ -150,6 +150,22 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
       });
     }
   }, [notifyOnComplete]);
+
+  const reloadCaches = useCallback(async () => {
+    const results = await Promise.allSettled([
+      api.listVoices(),
+      api.listMusicTracks("private"),
+      api.listMusicTracks("public"),
+    ]);
+    const [v, priv, pub] = results;
+    if (v.status === "fulfilled") {
+      setAvailableVoices(v.value.items.filter((voice) => voice.status === "ready"));
+    }
+    const tracks: MusicTrack[] = [];
+    if (priv.status === "fulfilled") tracks.push(...priv.value.items);
+    if (pub.status === "fulfilled") tracks.push(...pub.value.items);
+    if (tracks.length) setAvailableTracks(tracks);
+  }, []);
 
   const pollJob = useCallback(
     (id: string, ownerConversationId: string) => {
@@ -288,13 +304,21 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         if (active[0]) await loadConversation(active[0].id);
         if (setup === "optional") setView("account");
         // Preload voice/track lists once so PlanCard doesn't re-fetch on mount.
-        api.listVoices().then((v) => {
-          voiceCache.current = v.items.filter((voice) => voice.status === "ready");
-        }).catch(() => undefined);
-        Promise.all([api.listMusicTracks("private"), api.listMusicTracks("public")])
-          .then(([priv, pub]) => {
-            trackCache.current = [...priv.items, ...pub.items];
-          }).catch(() => undefined);
+        // Use Promise.allSettled so one failure doesn't block the other.
+        void Promise.allSettled([
+          api.listVoices(),
+          api.listMusicTracks("private"),
+          api.listMusicTracks("public"),
+        ]).then(([v, priv, pub]) => {
+          if (cancelled) return;
+          if (v.status === "fulfilled") {
+            setAvailableVoices(v.value.items.filter((voice) => voice.status === "ready"));
+          }
+          const tracks: MusicTrack[] = [];
+          if (priv.status === "fulfilled") tracks.push(...priv.value.items);
+          if (pub.status === "fulfilled") tracks.push(...pub.value.items);
+          if (tracks.length) setAvailableTracks(tracks);
+        });
       } catch (reason) {
         const apiError = reason as ApiError;
         if (apiError.code === "authentication_required")
@@ -587,21 +611,22 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
     item.title.toLocaleLowerCase("zh-CN").includes(search.toLocaleLowerCase("zh-CN")),
   );
 
-  function updateEditablePlan(next: PlanDraft) {
+  function updateEditablePlan(next: React.SetStateAction<PlanDraft>) {
     setPlan(next);
     if (!conversationId || !plan?.id) return;
+    const resolved = typeof next === "function" ? next(plan!) : next;
     if (planSaveTimer.current) clearTimeout(planSaveTimer.current);
     planSaveTimer.current = setTimeout(() => {
       void api.updatePlanDraft(conversationId, {
-        duration_minutes: next.duration_minutes,
-        music_source: next.music_source,
-        target_emotion: next.target_emotion,
-        credential_mode: next.credential_mode,
-        voice_mode: next.voice_mode,
-        selected_voice_id: next.selected_voice_id,
-        selected_music_asset_id: next.selected_music_asset_id,
-        guidance_style: next.guidance_style,
-        language_density: next.language_density,
+        duration_minutes: resolved.duration_minutes,
+        music_source: resolved.music_source,
+        target_emotion: resolved.target_emotion,
+        credential_mode: resolved.credential_mode,
+        voice_mode: resolved.voice_mode,
+        selected_voice_id: resolved.selected_voice_id,
+        selected_music_asset_id: resolved.selected_music_asset_id,
+        guidance_style: resolved.guidance_style,
+        language_density: resolved.language_density,
       });
     }, 300);
   }
@@ -760,6 +785,9 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
                 await Notification.requestPermission();
               }
             }}
+            voiceCache={availableVoices}
+            trackCache={availableTracks}
+            reloadCaches={reloadCaches}
           />
         )}
         {view === "api" && <ApiSettings />}
@@ -1019,6 +1047,9 @@ function ChatView({
   onPlay,
   notifyOnComplete,
   setNotifyOnComplete,
+  voiceCache,
+  trackCache,
+  reloadCaches,
 }: {
   messages: Message[];
   draft: string;
@@ -1029,7 +1060,7 @@ function ChatView({
   send: (event?: FormEvent) => void;
   canPlan: boolean;
   plan: PlanDraft | null;
-  setPlan: (plan: PlanDraft) => void;
+  setPlan: React.Dispatch<React.SetStateAction<PlanDraft>>;
   planning: boolean;
   finishVenting: () => void;
   jobState: JobState;
@@ -1047,6 +1078,9 @@ function ChatView({
   onPlay: (workId: string) => void;
   notifyOnComplete: boolean;
   setNotifyOnComplete: (enabled: boolean) => void;
+  voiceCache: VoiceAsset[];
+  trackCache: MusicTrack[];
+  reloadCaches: () => Promise<void>;
 }) {
   const hasMessages = messages.length > 0;
   return (
@@ -1125,8 +1159,9 @@ function ChatView({
                   setPlan={setPlan}
                   onStart={startJob}
                   starting={starting}
-                  voiceCache={voiceCache.current}
-                  trackCache={trackCache.current}
+                  voiceCache={voiceCache}
+                  trackCache={trackCache}
+                  reloadCaches={reloadCaches}
                 />
               )}
               {jobState === "running" && (
@@ -1206,37 +1241,24 @@ function PlanCard({
   starting,
   voiceCache,
   trackCache,
+  reloadCaches,
 }: {
   plan: PlanDraft;
-  setPlan: (plan: PlanDraft) => void;
+  setPlan: React.Dispatch<React.SetStateAction<PlanDraft>>;
   onStart: () => void;
   starting: boolean;
   voiceCache: VoiceAsset[];
   trackCache: MusicTrack[];
+  reloadCaches?: () => Promise<void>;
 }) {
-  const availableVoices = voiceCache.length
-    ? voiceCache
-    : [];
-  const availableTracks = trackCache.length
-    ? trackCache
-    : [];
+  const availableVoices = voiceCache.length ? voiceCache : [];
+  const availableTracks = trackCache.length ? trackCache : [];
   useEffect(() => {
-    // Only fetch if cache is empty (first visit to PlanCard).
+    // If caches are still empty (preload not yet finished or failed),
+    // ask the parent to reload instead of mutating any prop.
     if (voiceCache.length || trackCache.length) return;
-    let cancelled = false;
-    void Promise.all([
-      api.listVoices(),
-      api.listMusicTracks("private"),
-      api.listMusicTracks("public"),
-    ]).then(([voices, privateTracks, publicTracks]) => {
-      if (cancelled) return;
-      voiceCache.splice(0, voiceCache.length, ...voices.items.filter((voice) => voice.status === "ready"));
-      trackCache.splice(0, trackCache.length, ...privateTracks.items, ...publicTracks.items);
-    }).catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    reloadCaches?.();
+  }, [voiceCache.length, trackCache.length, reloadCaches]);
   const field = <K extends keyof PlanDraft>(key: K, value: PlanDraft[K]) =>
     setPlan((prev) => ({ ...prev, [key]: value }));
   return (

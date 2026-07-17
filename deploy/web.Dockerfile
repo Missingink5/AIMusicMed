@@ -13,6 +13,8 @@ COPY web/worker ./worker
 COPY web/drizzle.config.ts web/eslint.config.mjs ./
 COPY web/next.config.ts web/postcss.config.mjs ./
 COPY web/tsconfig.json web/vite.config.ts ./
+ARG NEXT_PUBLIC_SITE_URL=https://aimusicmed.cn
+ENV NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
 RUN npm run build
 
 FROM node:22-bookworm-slim AS runtime
