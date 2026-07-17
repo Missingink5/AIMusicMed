@@ -8,6 +8,25 @@
 
 > 这是产品原型和个人放松工具，不提供心理诊断、治疗或危机干预。出现持续心理困扰或紧急风险时，请联系专业机构或当地紧急服务。
 
+## 在线网页
+
+**正式网站：[https://aimusicmed.cn](https://aimusicmed.cn)**
+
+音乐冥想，是陪伴情绪的一剂温柔良方。听见此刻，慢慢抵达想去的情绪。
+
+当前网站采用受邀邮箱白名单，仅管理员和受邀用户可以登录。支持 6 位邮箱验证码或密码登录；登录后可以像使用聊天助手一样描述当下感受，确认系统生成的情绪路径与参数方案，再在后台生成、保存和下载音乐冥想。
+
+网页版本还提供：
+
+- 3、5、10、15 分钟快捷时长，以及 3–15 分钟高级设置；
+- 内置曲库、AI 音乐、语音引导和纯音乐模式；
+- MiniMax 精品引导音色与授权音色克隆；
+- 关闭网页后继续生成、作品收藏和 30 天音频保留策略；
+- 平台 API 和个人 API 两种计费模式；
+- 浅色、深色与跟随系统主题，兼容桌面和移动浏览器。
+
+Web 架构、Docker、腾讯云 SES、HTTPS 和备份部署说明见 [README_WEB.md](README_WEB.md)。
+
 ## 工作流
 
 ```text
@@ -76,6 +95,10 @@ run_py313_app.py
 | `config_manager.py` | JSON、`.env` 和环境变量配置 |
 | `scripts/setup_minimax_voice.py` | 授权音色上传、克隆和激活验证 |
 | `music_library/` | 7 类、61 个正式 WAV 素材文件 |
+| `web/` | ChatGPT 风格网页前端、PWA 和登录界面 |
+| `webapp/` | FastAPI、SQLite、后台任务、白名单与验证码认证 |
+| `docker-compose.yml` | API、worker、前端、Caddy 与备份服务编排 |
+| `README_WEB.md` | 公网部署、SES、HTTPS、备份和恢复说明 |
 | `tests/` | 离线单元测试与整曲 smoke 脚本 |
 | `config.json.example` | 不含密钥的配置模板 |
 | `requirements.txt` | Python 运行依赖 |

@@ -1,0 +1,149 @@
+name: aimusicmed
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-python-service: &python-service
+  build:
+    context: .
+    dockerfile: deploy/python.Dockerfile
+  env_file:
+    - ${AIMUSICMED_ENV_FILE:-deploy/.env}
+  volumes:
+    - app_data:/data
+  restart: unless-stopped
+  logging: *default-logging
+  networks:
+    - private
+
+services:
+  api:
+    <<: *python-service
+    command: ["python", "-m", "uvicorn", "webapp.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+    environment:
+      AIMUSICMED_WEB_DATA: /data
+      AIMUSICMED_DB_PATH: /data/app.db
+      AIMUSICMED_STORAGE_ROOT: /data/storage
+      AIMUSICMED_GLOBAL_TASK_CONCURRENCY: "1"
+    mem_limit: 384m
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *python-service
+    command: ["python", "-m", "webapp.worker"]
+    volumes:
+      - app_data:/data
+      - ./music_library:/app/music_library:ro
+    environment:
+      AIMUSICMED_WEB_DATA: /data
+      AIMUSICMED_DB_PATH: /data/app.db
+      AIMUSICMED_STORAGE_ROOT: /data/storage
+      AIMUSICMED_API_URL: http://api:8000
+      AIMUSICMED_GLOBAL_TASK_CONCURRENCY: "1"
+    mem_limit: 768m
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    restart: unless-stopped
+    mem_limit: 256m
+    logging: *default-logging
+    expose:
+      - "3000"
+    networks:
+      - private
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  caddy:
+    image: caddy:2.10-alpine
+    environment:
+      AIMUSICMED_DOMAIN: ${AIMUSICMED_DOMAIN:?AIMUSICMED_DOMAIN is required}
+      AIMUSICMED_ACME_EMAIL: ${AIMUSICMED_ACME_EMAIL:?AIMUSICMED_ACME_EMAIL is required}
+    restart: unless-stopped
+    mem_limit: 96m
+    logging: *default-logging
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - private
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  backup:
+    build:
+      context: .
+      dockerfile: deploy/backup.Dockerfile
+    environment:
+      AIMUSICMED_BACKUP_PASSPHRASE: ${AIMUSICMED_BACKUP_PASSPHRASE:?AIMUSICMED_BACKUP_PASSPHRASE is required}
+      AIMUSICMED_BACKUP_KEEP_DAILY: ${AIMUSICMED_BACKUP_KEEP_DAILY:-7}
+      AIMUSICMED_BACKUP_KEEP_WEEKLY: ${AIMUSICMED_BACKUP_KEEP_WEEKLY:-4}
+      AIMUSICMED_BACKUP_KEEP_MONTHLY: ${AIMUSICMED_BACKUP_KEEP_MONTHLY:-3}
+      AIMUSICMED_BACKUP_MAX_REPO_MB: ${AIMUSICMED_BACKUP_MAX_REPO_MB:-12288}
+      AIMUSICMED_BACKUP_MIN_FREE_MB: ${AIMUSICMED_BACKUP_MIN_FREE_MB:-6144}
+    command: /opt/backup/backup-loop.sh
+    restart: unless-stopped
+    mem_limit: 192m
+    logging: *default-logging
+    volumes:
+      # The scheduled backup only reads /data. Restore uses the same image and
+      # needs this mount writable after api/worker/backup have been stopped.
+      - app_data:/data
+      - ./backups:/backups
+    networks:
+      - private
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /backups/status/last-success && find /backups/status/last-success -mmin -1560 -print | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30m
+
+volumes:
+  app_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  private:
+    driver: bridge

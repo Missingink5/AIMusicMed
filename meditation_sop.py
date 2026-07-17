@@ -66,12 +66,19 @@ def plan_emotion_stages(
     current_emotion: str,
     duration_minutes: int,
     preferred_track_seconds: int = 60,
+    target_emotion: str | None = None,
 ) -> List[Dict]:
     total_seconds = int(duration_minutes * 60)
     if total_seconds <= 0:
         raise ValueError("冥想总时长必须大于 0")
 
-    emotion_path = EMOTION_PATHS.get(current_emotion, EMOTION_PATHS["平静"])
+    if target_emotion is not None and target_emotion not in EMOTION_EN:
+        raise ValueError(f"不支持的目标情绪: {target_emotion}")
+    emotion_path = (
+        [current_emotion, "平静", target_emotion]
+        if target_emotion
+        else EMOTION_PATHS.get(current_emotion, EMOTION_PATHS["平静"])
+    )
     weights = _stage_weights(current_emotion)
     stage_durations = [int(total_seconds * weights[0]), int(total_seconds * weights[1])]
     stage_durations.append(total_seconds - sum(stage_durations))

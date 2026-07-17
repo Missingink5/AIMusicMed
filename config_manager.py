@@ -144,7 +144,7 @@ class AudioConfig:
     music_transition_fade_seconds: float = 3.0
     tts_backend: str = "minimax"
     minimax_model: str = "speech-2.8-hd"
-    minimax_voice_id: str = "Chinese (Mandarin)_Gentle_Senior"
+    minimax_voice_id: str = "female-chengshu-jingpin"
     minimax_speed: float = 0.8
     minimax_volume: float = 1.0
     minimax_pitch: int = 0

@@ -12,6 +12,9 @@ from run_py313_app import get_ai_music_provider, get_music_source
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_default_minimax_voice_is_premium_mature_female(self):
+        self.assertEqual(AudioConfig().minimax_voice_id, "female-chengshu-jingpin")
+
     def test_windows_default_output_directory(self):
         if os.name == "nt":
             self.assertEqual(

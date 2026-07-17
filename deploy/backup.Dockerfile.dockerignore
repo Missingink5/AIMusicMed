@@ -1,0 +1,6 @@
+**
+!deploy/
+!deploy/backup.sh
+!deploy/backup-loop.sh
+!deploy/restore.sh
+

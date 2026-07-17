@@ -28,6 +28,7 @@ logs/
 .pytest_cache/
 htmlcov/
 .learnings/
+.firecrawl/
 *.tmp
 *.temp
 temp/
@@ -46,6 +47,8 @@ secrets.json
 /voice_refs/
 generated_audio/
 output/
+webapp-data/
+backups/
 
 # AI 模型与缓存
 models/

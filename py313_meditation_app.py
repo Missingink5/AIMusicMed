@@ -15,7 +15,7 @@ import hashlib
 import random
 import uuid
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import Any, Callable, List, Dict, Optional, Tuple
 
 import librosa
 import numpy as np
@@ -43,7 +43,12 @@ class MeditationAppError(Exception):
 
 
 class MeditationApp:
-    def __init__(self, config: Optional[AppConfig] = None):
+    def __init__(
+        self,
+        config: Optional[AppConfig] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        cancel_requested: Optional[Callable[[], bool]] = None,
+    ):
         """
         初始化冥想应用
         """
@@ -52,6 +57,8 @@ class MeditationApp:
         self.config.create_directories()
         self._session_temp_files = set()
         self._session_id = uuid.uuid4().hex[:12]
+        self._progress_callback = progress_callback
+        self._cancel_requested = cancel_requested
         
         # 设置日志
         self._setup_logging()
@@ -62,6 +69,17 @@ class MeditationApp:
         self.local_music_lib = LocalMusicLibrary()
         
         self.logger.info(f"MeditationApp 初始化完成，使用设备: {self.device}")
+
+    def _emit_progress(self, phase: str, **details: Any) -> None:
+        """向 Web/CLI 适配层发送不含用户原文的结构化进度。"""
+        callback = getattr(self, "_progress_callback", None)
+        if callback:
+            callback({"phase": phase, **details})
+
+    def _check_cancelled(self) -> None:
+        callback = getattr(self, "_cancel_requested", None)
+        if callback and callback():
+            raise MeditationAppError("任务已由用户取消")
 
     def _setup_logging(self):
         """设置日志系统"""
@@ -102,18 +120,71 @@ class MeditationApp:
                 "temperature": 0.3,
                 "max_tokens": max_tokens,
                 "stream": False,
+                "response_format": {"type": "json_object"},
             },
             timeout=getattr(self.config.api, "deepseek_timeout_seconds", 180),
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"].strip()
+        headers = getattr(response, "headers", {}) or {}
+        request_id = (
+            headers.get("x-request-id") or headers.get("x-ds-trace-id") or "unknown"
+            if hasattr(headers, "get")
+            else "unknown"
+        )
+        response_body = getattr(response, "content", b"")
+        body_bytes = len(response_body) if isinstance(response_body, (bytes, bytearray)) else "unknown"
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            self.logger.warning(
+                "DeepSeek HTTP响应不是有效JSON: status=%s, bytes=%s, request_id=%s",
+                response.status_code,
+                body_bytes,
+                request_id,
+            )
+            raise ValueError("DeepSeek HTTP响应不是有效JSON或响应体为空") from exc
+
+        if not isinstance(payload, dict):
+            raise ValueError(f"DeepSeek HTTP响应顶层必须是对象，实际为{type(payload).__name__}")
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ValueError("DeepSeek HTTP响应缺少有效的choices[0]")
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise ValueError("DeepSeek HTTP响应缺少有效的message")
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            self.logger.warning(
+                "DeepSeek返回空内容: status=%s, finish_reason=%s, request_id=%s",
+                response.status_code,
+                choice.get("finish_reason", "unknown"),
+                request_id,
+            )
+            raise ValueError("DeepSeek返回的message.content为空")
+        content = content.strip()
         if content.startswith("```json"):
             content = content[7:]
         elif content.startswith("```"):
             content = content[3:]
         if content.endswith("```"):
             content = content[:-3]
-        return json.loads(content.strip())
+        try:
+            result = json.loads(content.strip())
+        except json.JSONDecodeError as exc:
+            self.logger.warning(
+                "DeepSeek message.content不是有效JSON: chars=%s, request_id=%s",
+                len(content),
+                request_id,
+            )
+            raise ValueError(
+                f"DeepSeek message.content不是有效JSON: {exc.msg}"
+            ) from exc
+        if not isinstance(result, dict):
+            raise ValueError(
+                f"DeepSeek返回的JSON顶层必须是对象，实际为{type(result).__name__}"
+            )
+        return result
 
     def analyze_emotion_with_ai(self, user_input: str) -> Dict:
         """Use AI for the primary emotion; fall back transparently to keywords."""
@@ -279,13 +350,19 @@ class MeditationApp:
         print(f"⚠️ DeepSeek音乐提示词生成失败，使用匿名本地模板: {last_error}")
         return self._template_ai_music_prompts(stage_plan)
 
-    def prepare_session_plan(self, user_input: str, duration_minutes: int) -> Dict:
+    def prepare_session_plan(
+        self,
+        user_input: str,
+        duration_minutes: int,
+        target_emotion: Optional[str] = None,
+    ) -> Dict:
         """AI emotion -> emotion stages -> duration-based music segment plan."""
         emotion_analysis = self.analyze_emotion_with_ai(user_input)
         stages = plan_emotion_stages(
             emotion_analysis["primary_emotion"],
             duration_minutes,
             self.config.audio.preferred_track_duration_seconds,
+            target_emotion=target_emotion,
         )
         segment_plan = build_music_segment_plan(stages)
         journey_text = " → ".join(stage["emotion_cn"] for stage in stages)
@@ -355,10 +432,16 @@ class MeditationApp:
 
     @staticmethod
     def _validate_guidance_result(result: Dict, prompt_manifest: List[Dict]) -> List[Dict]:
+        if not isinstance(result, dict):
+            raise ValueError(
+                f"AI引导词JSON顶层必须是对象，实际为{type(result).__name__}"
+            )
         scripts = result.get("scripts")
         if not isinstance(scripts, list) or len(scripts) != len(prompt_manifest):
             raise ValueError("AI引导词数量与音乐片段数量不一致")
         expected = {item["segment_id"]: item for item in prompt_manifest}
+        if not all(isinstance(script, dict) for script in scripts):
+            raise ValueError("AI引导词scripts中的每一项都必须是对象")
         returned_ids = [script.get("segment_id") for script in scripts]
         if len(set(returned_ids)) != len(returned_ids) or set(returned_ids) != set(expected):
             raise ValueError("AI引导词片段ID重复、缺失或多余")
@@ -415,14 +498,24 @@ class MeditationApp:
         )
         max_tokens = self._guidance_max_tokens(prompt_manifest)
         last_error = None
+        base_system_prompt = (
+            "你是专业冥想引导师。根据每段已经选定的音乐情绪、曲名标签、声学特征、阶段目标和实际时长，"
+            "逐段生成中文引导词。不得虚构音乐中未提供的乐器或事件。"
+            "只返回JSON对象，不要返回代码围栏，顶层不得直接返回数组。JSON对象必须包含scripts数组；"
+            "每项必须原样返回segment_id、music_ref、grounding_fingerprint和text。"
+            "每段text应达到target_text_characters的90%-100%，朗读时长接近target_speech_seconds，"
+            "使用自然完整的冥想指导语扩展篇幅，不得机械重复句子。"
+        )
         for attempt in range(2):
             try:
+                system_prompt = base_system_prompt
+                if last_error is not None:
+                    system_prompt += (
+                        "上一次响应不符合JSON结构要求。请纠正后重新生成；"
+                        f"错误类型为{type(last_error).__name__}，原因是{str(last_error)[:200]}。"
+                    )
                 result = self._request_deepseek_json(
-                    "你是专业冥想引导师。根据每段已经选定的音乐情绪、曲名标签、声学特征、阶段目标和实际时长，"
-                    "逐段生成中文引导词。不得虚构音乐中未提供的乐器或事件。"
-                    "返回JSON对象，包含scripts数组；每项必须原样返回segment_id、music_ref、grounding_fingerprint和text。"
-                    "每段text应达到target_text_characters的90%-100%，朗读时长接近target_speech_seconds，"
-                    "使用自然完整的冥想指导语扩展篇幅，不得机械重复句子。",
+                    system_prompt,
                     request_payload,
                     max_tokens,
                 )
@@ -851,6 +944,12 @@ class MeditationApp:
         music_files = []
 
         for index, stage in enumerate(stage_plan, start=1):
+            self._check_cancelled()
+            self._emit_progress(
+                "generating_music",
+                current_segment=index,
+                total_segments=len(stage_plan),
+            )
             prompt_spec = prompt_by_id[stage["segment_id"]]
             generated = None
             errors = []
@@ -1018,17 +1117,21 @@ class MeditationApp:
         self.logger.info("开始自适应音频合成")
         print("🎧 正在进行自适应音频合成...")
 
-        if len(speech_files) != len(music_info):
+        if speech_files and len(speech_files) != len(music_info):
             raise MeditationAppError(
                 f"语音与音乐片段数量不一致: {len(speech_files)} != {len(music_info)}"
             )
         
         final_audio = AudioSegment.empty()
         
-        for i, (speech_file, music) in enumerate(zip(speech_files, music_info)):
+        pairs = (
+            list(zip(speech_files, music_info))
+            if speech_files
+            else [(None, music) for music in music_info]
+        )
+        for i, (speech_file, music) in enumerate(pairs):
             try:
                 # 加载音频文件
-                speech = AudioSegment.from_file(speech_file)
                 music_segment = AudioSegment.from_file(music['path'])
                 
                 # 完整音乐文件决定片段实际时长，不再按规划时长裁剪或补循环。
@@ -1040,20 +1143,24 @@ class MeditationApp:
                 # 调整音量：语音为主，音乐为背景
                 music_segment = music_segment - music_reduction
                 
-                speech_position_ms = int(self.config.audio.speech_start_delay_seconds * 1000)
-                available_speech_ms = target_duration_ms - speech_position_ms
-                if available_speech_ms <= 0:
-                    raise MeditationAppError("语音起始留白不能超过整首音乐时长")
-                overflow_ms = len(speech) - available_speech_ms
-                if overflow_ms > 500:
-                    raise MeditationAppError(
-                        f"语音比可用音乐时段长 {overflow_ms / 1000:.1f} 秒，拒绝截断尾句"
-                    )
-                if overflow_ms > 0:
-                    speech = speech[:available_speech_ms]
-                
-                # 合并音频
-                combined = music_segment.overlay(speech, position=speech_position_ms).normalize_peak(0.95)
+                if speech_file:
+                    speech = AudioSegment.from_file(speech_file)
+                    speech_position_ms = int(self.config.audio.speech_start_delay_seconds * 1000)
+                    available_speech_ms = target_duration_ms - speech_position_ms
+                    if available_speech_ms <= 0:
+                        raise MeditationAppError("语音起始留白不能超过整首音乐时长")
+                    overflow_ms = len(speech) - available_speech_ms
+                    if overflow_ms > 500:
+                        raise MeditationAppError(
+                            f"语音比可用音乐时段长 {overflow_ms / 1000:.1f} 秒，拒绝截断尾句"
+                        )
+                    if overflow_ms > 0:
+                        speech = speech[:available_speech_ms]
+                    combined = music_segment.overlay(
+                        speech, position=speech_position_ms
+                    ).normalize_peak(0.95)
+                else:
+                    combined = music_segment.normalize_peak(0.95)
                 crossfade_ms = int(self.config.audio.music_transition_fade_seconds * 1000)
                 final_audio = final_audio.append_with_crossfade(combined, crossfade_ms)
                 
@@ -1066,10 +1173,13 @@ class MeditationApp:
         
         # 导出最终音频
         output_path = output_path or self._build_output_path(duration_minutes, emotion_journey)
+        temporary_output = str(Path(output_path).with_suffix(".part.wav"))
         try:
             final_audio = final_audio.normalize_peak(0.95)
-            final_audio.export(output_path, format="wav")  # 使用WAV格式确保兼容性
+            final_audio.export(temporary_output, format="wav")
+            Path(temporary_output).replace(output_path)
         except Exception:
+            Path(temporary_output).unlink(missing_ok=True)
             Path(output_path).unlink(missing_ok=True)
             raise
         
@@ -1140,6 +1250,9 @@ class MeditationApp:
         cleanup: bool = True,
         music_source: str = "library",
         ai_music_provider: Optional[str] = None,
+        target_emotion: Optional[str] = None,
+        include_guidance: bool = True,
+        prepared_plan: Optional[Dict] = None,
     ) -> Tuple[str, Dict]:
         """
         创建完整的冥想会话
@@ -1161,9 +1274,9 @@ class MeditationApp:
             )
         if music_source not in {"library", "ai"}:
             raise MeditationAppError(f"不支持的音乐来源: {music_source}")
-        if not self.config.api.minimax_api_key:
+        if include_guidance and not self.config.api.minimax_api_key:
             raise MeditationAppError("未配置 MiniMax TTS 密钥: MINIMAX_API_KEY")
-        if not str(self.config.audio.minimax_voice_id).strip():
+        if include_guidance and not str(self.config.audio.minimax_voice_id).strip():
             raise MeditationAppError("未配置 MiniMax TTS 音色: minimax_voice_id")
         if music_source == "ai" and ai_music_provider not in {"elevenlabs", "minimax"}:
             raise MeditationAppError("AI音乐模式必须选择 elevenlabs 或 minimax")
@@ -1178,13 +1291,21 @@ class MeditationApp:
         
         self.logger.info(f"开始创建冥想会话: {session_info}")
         print(f"🧘‍♀️ 开始创建 {duration_minutes} 分钟的冥想会话...")
-        print(f"用户倾诉: {user_input}")
         asset_dir = None
         final_output_path = None
 
         try:
             # 1. AI识别情绪，并按阶段时长规划音乐数量
-            prompts_data = self.prepare_session_plan(user_input, duration_minutes)
+            self._check_cancelled()
+            self._emit_progress("planning")
+            if prepared_plan:
+                prompts_data = prepared_plan
+            elif target_emotion:
+                prompts_data = self.prepare_session_plan(
+                    user_input, duration_minutes, target_emotion=target_emotion
+                )
+            else:
+                prompts_data = self.prepare_session_plan(user_input, duration_minutes)
             
             # 显示安慰语或分析结果
             if "analysis" in prompts_data:
@@ -1203,6 +1324,8 @@ class MeditationApp:
             
             # 2. 先选择或生成具体音乐并提取音乐内容特征
             print("🎵 开始按情绪路径选择并分析音乐...")
+            self._check_cancelled()
+            self._emit_progress("preparing_music")
             emotion_journey = prompts_data.get('emotion_journey_plan', [])
             if music_source == "ai":
                 stage_plan = self._build_ai_stage_plan(emotion_journey)
@@ -1229,19 +1352,29 @@ class MeditationApp:
                 )
 
             # 3. 根据已选音乐的情绪、内容特征和时长生成逐段引导词
-            print("📝 开始生成与具体音乐对齐的引导词...")
-            script_prompts = self.generate_guidance_for_music(user_input, prompts_data, music_info)
+            self._check_cancelled()
+            if include_guidance:
+                print("📝 开始生成与具体音乐对齐的引导词...")
+                self._emit_progress("generating_guidance")
+                script_prompts = self.generate_guidance_for_music(user_input, prompts_data, music_info)
 
-            # 4. 将对齐后的引导词交给TTS
-            print("🎙️ 开始自适应语音生成...")
-            speech_files = await self.generate_speech_adaptive(
-                script_prompts,
-                music_info,
-                user_input,
-            )
+                # 4. 将对齐后的引导词交给TTS
+                self._check_cancelled()
+                print("🎙️ 开始自适应语音生成...")
+                self._emit_progress("generating_speech")
+                speech_files = await self.generate_speech_adaptive(
+                    script_prompts,
+                    music_info,
+                    user_input,
+                )
+            else:
+                script_prompts = []
+                speech_files = []
             
             # 5. 自适应音频合成
             print("🎧 开始自适应音频合成...")
+            self._check_cancelled()
+            self._emit_progress("mixing")
             if final_output_path:
                 final_audio_path = self.combine_audio_adaptive(
                     speech_files,
@@ -1278,6 +1411,11 @@ class MeditationApp:
                 "guidance_sources": sorted(
                     {script.get("guidance_source", "unknown") for script in script_prompts}
                 ),
+                "guidance_text": "\n\n".join(
+                    script.get("text", "").strip() for script in script_prompts
+                    if script.get("text", "").strip()
+                ),
+                "voice_mode": "tts" if include_guidance else "music_only",
                 "success": True
             })
             if asset_dir:
@@ -1295,6 +1433,7 @@ class MeditationApp:
                 session_info["asset_dir"] = asset_dir
             
             self.logger.info("冥想会话创建完成")
+            self._emit_progress("completed")
             print(f"\n🎉 冥想会话创建完成!")
             print(f"📁 输出文件: {final_audio_path}")
             

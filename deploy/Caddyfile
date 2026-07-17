@@ -1,0 +1,40 @@
+{
+	email {$AIMUSICMED_ACME_EMAIL}
+}
+
+{$AIMUSICMED_DOMAIN} {
+	encode zstd gzip
+
+	# Worker endpoints stay reachable only on Docker's private api:8000 network.
+	handle /api/v1/internal/* {
+		respond 404
+	}
+
+	handle_path /api/v1/* {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), geolocation=(), microphone=(self)"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+www.{$AIMUSICMED_DOMAIN} {
+	route {
+		header -Server
+		redir https://{$AIMUSICMED_DOMAIN}{uri} permanent
+	}
+}

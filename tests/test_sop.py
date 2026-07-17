@@ -69,6 +69,16 @@ class SopPlanningTests(unittest.TestCase):
             self.assertEqual(sum(item["duration_seconds"] for item in segments), minutes * 60)
             self.assertTrue(all(stage["track_count"] >= 1 for stage in stages))
 
+    def test_explicit_target_emotion_controls_final_stage(self):
+        stages = plan_emotion_stages("焦虑", 5, 60, target_emotion="自豪")
+
+        self.assertEqual([stage["emotion_cn"] for stage in stages], ["焦虑", "平静", "自豪"])
+        self.assertEqual(sum(stage["duration"] for stage in stages), 300)
+
+    def test_unknown_target_emotion_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "不支持的目标情绪"):
+            plan_emotion_stages("焦虑", 5, 60, target_emotion="振奋")
+
     def test_ai_emotion_is_used_when_response_is_valid(self):
         app = MeditationApp.__new__(MeditationApp)
         app._request_deepseek_json = Mock(
@@ -109,6 +119,97 @@ class SopPlanningTests(unittest.TestCase):
             post.call_args.args[0],
             "https://api.deepseek.com/v1/chat/completions",
         )
+
+    @patch("py313_meditation_app.requests.post")
+    def test_deepseek_json_mode_accepts_object_response(self, post):
+        app = MeditationApp.__new__(MeditationApp)
+        app.config = SimpleNamespace(
+            api=SimpleNamespace(
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com/v1",
+                deepseek_model="deepseek-v4-flash",
+                deepseek_timeout_seconds=180,
+            )
+        )
+        app.logger = Mock()
+        response = Mock(status_code=200, headers={}, content=b"response")
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {"content": '{"scripts": []}'},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        post.return_value = response
+
+        result = app._request_deepseek_json("返回JSON", "测试", 500)
+
+        self.assertEqual(result, {"scripts": []})
+        request_json = post.call_args.kwargs["json"]
+        self.assertEqual(request_json["response_format"], {"type": "json_object"})
+
+    @patch("py313_meditation_app.requests.post")
+    def test_deepseek_json_rejects_empty_http_body(self, post):
+        app = MeditationApp.__new__(MeditationApp)
+        app.config = SimpleNamespace(
+            api=SimpleNamespace(
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com/v1",
+                deepseek_model="deepseek-v4-flash",
+                deepseek_timeout_seconds=180,
+            )
+        )
+        app.logger = Mock()
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b""
+        post.return_value = response
+
+        with self.assertRaisesRegex(ValueError, "响应体为空"):
+            app._request_deepseek_json("返回JSON", "测试", 500)
+
+    @patch("py313_meditation_app.requests.post")
+    def test_deepseek_json_rejects_empty_message_content(self, post):
+        app = MeditationApp.__new__(MeditationApp)
+        app.config = SimpleNamespace(
+            api=SimpleNamespace(
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com/v1",
+                deepseek_model="deepseek-v4-flash",
+                deepseek_timeout_seconds=180,
+            )
+        )
+        app.logger = Mock()
+        response = Mock(status_code=200, headers={}, content=b"response")
+        response.json.return_value = {
+            "choices": [{"message": {"content": ""}, "finish_reason": "stop"}]
+        }
+        post.return_value = response
+
+        with self.assertRaisesRegex(ValueError, "message.content为空"):
+            app._request_deepseek_json("返回JSON", "测试", 500)
+
+    @patch("py313_meditation_app.requests.post")
+    def test_deepseek_json_rejects_top_level_list(self, post):
+        app = MeditationApp.__new__(MeditationApp)
+        app.config = SimpleNamespace(
+            api=SimpleNamespace(
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com/v1",
+                deepseek_model="deepseek-v4-flash",
+                deepseek_timeout_seconds=180,
+            )
+        )
+        app.logger = Mock()
+        response = Mock(status_code=200, headers={}, content=b"response")
+        response.json.return_value = {
+            "choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}]
+        }
+        post.return_value = response
+
+        with self.assertRaisesRegex(ValueError, "JSON顶层必须是对象，实际为list"):
+            app._request_deepseek_json("返回JSON", "测试", 500)
 
     def test_guidance_is_strictly_grounded_in_selected_music(self):
         app = MeditationApp.__new__(MeditationApp)
@@ -152,6 +253,7 @@ class SopPlanningTests(unittest.TestCase):
         self.assertEqual(segment["target_speech_seconds"], 50.0)
         self.assertEqual(segment["target_text_characters"], 119)
         self.assertEqual(app._request_deepseek_json.call_args.args[2], 4096)
+        self.assertEqual(app._request_deepseek_json.call_count, 1)
 
     def test_guidance_budget_scales_from_60_to_400_actual_seconds(self):
         app = MeditationApp.__new__(MeditationApp)
@@ -193,6 +295,36 @@ class SopPlanningTests(unittest.TestCase):
 
         self.assertTrue(all(item["guidance_source"] == "local_fallback" for item in scripts))
         self.assertEqual([item["segment_id"] for item in scripts], ["segment_01", "segment_02"])
+        self.assertEqual(app._request_deepseek_json.call_count, 2)
+        retry_system_prompt = app._request_deepseek_json.call_args_list[1].args[0]
+        self.assertIn("上一次响应不符合JSON结构要求", retry_system_prompt)
+
+    def test_guidance_retries_top_level_list_then_accepts_valid_object(self):
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        attach_audio_config(app)
+        music = [sample_music()]
+        manifest = app._public_music_manifest(music)
+        valid_script = {
+            "segment_id": manifest[0]["segment_id"],
+            "music_ref": manifest[0]["music_ref"],
+            "grounding_fingerprint": manifest[0]["grounding_fingerprint"],
+            "text": "安静地跟随呼吸，让身体逐渐放松。" * 8,
+        }
+        app._request_deepseek_json = Mock(
+            side_effect=[[valid_script], {"scripts": [valid_script]}]
+        )
+        plan = {
+            "emotion_analysis": {"primary_emotion": "焦虑"},
+            "emotion_journey": "焦虑 → 平静",
+        }
+
+        scripts = app.generate_guidance_for_music("紧张", plan, music)
+
+        self.assertEqual(app._request_deepseek_json.call_count, 2)
+        self.assertEqual(scripts[0]["guidance_source"], "ai")
+        retry_system_prompt = app._request_deepseek_json.call_args_list[1].args[0]
+        self.assertIn("实际为list", retry_system_prompt)
 
     def test_script_music_count_mismatch_fails_before_tts(self):
         app = MeditationApp.__new__(MeditationApp)

@@ -21,7 +21,7 @@
     "music_transition_fade_seconds": 3.0,
     "tts_backend": "minimax",
     "minimax_model": "speech-2.8-hd",
-    "minimax_voice_id": "Chinese (Mandarin)_Gentle_Senior",
+    "minimax_voice_id": "female-chengshu-jingpin",
     "minimax_speed": 0.8,
     "minimax_volume": 1.0,
     "minimax_pitch": 0,
