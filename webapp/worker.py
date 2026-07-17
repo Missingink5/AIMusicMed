@@ -125,6 +125,8 @@ def run_claim(client: WorkerClient, claim: dict) -> None:
                 ai_music_provider="minimax" if claim["music_source"] == "ai" else None,
                 target_emotion=target,
                 include_guidance=claim["voice_mode"] == "tts",
+                guidance_style=claim.get("guidance_style", "auto"),
+                language_density=claim.get("language_density", "balanced"),
             )
         )
         if cancel_requested():
@@ -145,6 +147,7 @@ def cleanup_expired(settings: Settings) -> int:
     db = Database(settings.database_path)
     removed = 0
     with db.transaction(immediate=True) as conn:
+        Database.purge_expired_conversations(conn, int(time.time()))
         rows = conn.execute(
             "SELECT file_relpath,mp3_relpath FROM works "
             "WHERE is_favorite=0 AND expires_at IS NOT NULL AND expires_at<=?",

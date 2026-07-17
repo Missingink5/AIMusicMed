@@ -1,2 +1,2 @@
-import { AppDemo } from "../../../components/app-demo";
+import { AppDemo } from "../../../components/core-experience";
 export default function ApiPage() { return <AppDemo initialView="api" />; }

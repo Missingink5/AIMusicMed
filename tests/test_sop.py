@@ -261,8 +261,49 @@ class SopPlanningTests(unittest.TestCase):
 
         self.assertEqual(app._guidance_speech_budget(60), 50.0)
         self.assertEqual(app._guidance_speech_budget(400), 350.0)
+        self.assertEqual(app._guidance_speech_budget(60, "less_language"), 22.5)
+        self.assertEqual(app._guidance_speech_budget(400, "less_language"), 157.5)
         self.assertEqual(app._guidance_target_characters(50), 119)
         self.assertEqual(app._guidance_target_characters(350), 833)
+
+    def test_less_language_is_sent_to_guidance_model_and_reduces_target(self):
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        attach_audio_config(app)
+        music = [sample_music()]
+        manifest = app._public_music_manifest(music)
+        app._request_deepseek_json = Mock(
+            return_value={
+                "scripts": [
+                    {
+                        "segment_id": manifest[0]["segment_id"],
+                        "music_ref": manifest[0]["music_ref"],
+                        "grounding_fingerprint": manifest[0]["grounding_fingerprint"],
+                        "text": (
+                            "跟随呼吸，慢慢放松身体，也允许此刻的感受被温柔看见。"
+                            "不必催促自己改变，只要在音乐里安静停留，给心情留一点空间。"
+                        ),
+                    }
+                ]
+            }
+        )
+        plan = {
+            "emotion_analysis": {"primary_emotion": "焦虑"},
+            "emotion_journey": "焦虑 → 平静",
+        }
+
+        app.generate_guidance_for_music(
+            "最近有些紧张",
+            plan,
+            music,
+            guidance_style="breath_awareness",
+            language_density="less_language",
+        )
+
+        request_payload = json.loads(app._request_deepseek_json.call_args.args[1])
+        self.assertEqual(request_payload["guidance_preferences"]["style"], "呼吸觉察")
+        self.assertIn("减少语言", request_payload["guidance_preferences"]["language_density"])
+        self.assertEqual(request_payload["music_manifest"][0]["target_speech_seconds"], 22.5)
 
     def test_guidance_token_budget_expands_for_multiple_long_segments(self):
         prompt_manifest = [
@@ -362,9 +403,9 @@ class SopPlanningTests(unittest.TestCase):
         app.get_session_info = lambda *_: {}
         app.prepare_session_plan = lambda *_: events.append("detect_plan") or plan
         app.generate_music = lambda *_: events.append("select_analyze_music") or music
-        app.generate_guidance_for_music = lambda *_: events.append("generate_guidance") or script
+        app.generate_guidance_for_music = lambda *_, **__: events.append("generate_guidance") or script
 
-        async def fake_tts(*_):
+        async def fake_tts(*_, **__):
             events.append("tts")
             return ["speech.wav"]
 

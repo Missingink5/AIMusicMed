@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS messages (
   role TEXT NOT NULL, content TEXT NOT NULL, risk_level TEXT NOT NULL DEFAULT 'normal',
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS plan_drafts (
+  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id),
+  summary TEXT NOT NULL, primary_emotion TEXT NOT NULL, emotion_path TEXT NOT NULL,
+  duration_minutes INTEGER NOT NULL, music_source TEXT NOT NULL, target_emotion TEXT NOT NULL,
+  credential_mode TEXT NOT NULL, voice_mode TEXT NOT NULL, guidance_style TEXT NOT NULL,
+  language_density TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS plans (
   id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id),
   message_id TEXT NOT NULL REFERENCES messages(id), duration_minutes INTEGER NOT NULL,
@@ -118,6 +125,18 @@ class Database:
             self._add_column(conn, "users", "password_failed_attempts", "INTEGER NOT NULL DEFAULT 0")
             self._add_column(conn, "users", "password_locked_until", "INTEGER")
             self._add_column(conn, "users", "activated_at", "INTEGER")
+            self._add_column(conn, "conversations", "deleted_at", "INTEGER")
+            self._add_column(conn, "conversations", "purge_at", "INTEGER")
+            self._add_column(conn, "conversations", "purged_at", "INTEGER")
+            self._add_column(conn, "jobs", "retry_of_job_id", "TEXT")
+            self._add_column(conn, "plans", "guidance_style", "TEXT NOT NULL DEFAULT 'gentle'")
+            self._add_column(conn, "plans", "language_density", "TEXT NOT NULL DEFAULT 'balanced'")
+            self._add_column(conn, "plans", "draft_id", "TEXT")
+            self._add_column(conn, "plan_drafts", "locked_at", "INTEGER")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_draft_id "
+                "ON plans(draft_id) WHERE draft_id IS NOT NULL"
+            )
             self._apply_auth_v2_cutover(conn)
 
     @staticmethod
@@ -135,6 +154,31 @@ class Database:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def purge_expired_conversations(conn: sqlite3.Connection, now: int) -> int:
+        due = conn.execute(
+            "SELECT id FROM conversations WHERE purged_at IS NULL AND purge_at IS NOT NULL AND purge_at<=?",
+            (now,),
+        ).fetchall()
+        for item in due:
+            conversation_id = item["id"]
+            conn.execute("DELETE FROM plan_drafts WHERE conversation_id=?", (conversation_id,))
+            conn.execute(
+                "DELETE FROM messages WHERE conversation_id=? AND id NOT IN "
+                "(SELECT message_id FROM plans WHERE conversation_id=?)",
+                (conversation_id, conversation_id),
+            )
+            # A plan's anchor message is retained only to satisfy immutable FK history; its text is destroyed.
+            conn.execute(
+                "UPDATE messages SET content='[聊天记录已永久删除]' WHERE conversation_id=?",
+                (conversation_id,),
+            )
+            conn.execute(
+                "UPDATE conversations SET title='[已删除的会话]',purged_at=? WHERE id=?",
+                (now, conversation_id),
+            )
+        return len(due)
 
     @contextmanager
     def connection(self):

@@ -29,7 +29,7 @@ const prompts = [
   "状态不错，想把这份自信稳定下来。",
 ];
 
-export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
+export function LegacyAppDemo({ initialView = "chat" }: { initialView?: View }) {
   const [view, setView] = useState<View>(initialView);
   const [drawer, setDrawer] = useState(false);
   const [user, setUser] = useState<User | null>(null);
@@ -918,7 +918,7 @@ function WorkCard({ workId }: { workId: string }) {
   );
 }
 
-function ApiSettings() {
+export function ApiSettings() {
   const [personal, setPersonal] = useState(true);
   const [keys, setKeys] = useState({
     deepseek_api_key: "",
@@ -1084,7 +1084,7 @@ function Credential({
   );
 }
 
-function AccountSettings({
+export function AccountSettings({
   user,
   required,
   onComplete,
@@ -1176,7 +1176,7 @@ function AccountSettings({
   );
 }
 
-function AdminView() {
+export function AdminView() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState("");

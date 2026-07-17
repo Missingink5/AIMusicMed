@@ -1,2 +1,2 @@
-import { AppDemo } from "../components/app-demo";
+import { AppDemo } from "../components/core-experience";
 export default function AdminPage() { return <AppDemo initialView="admin" />; }

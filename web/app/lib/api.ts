@@ -13,6 +13,7 @@ export type Conversation = {
   title: string;
   created_at: number;
   updated_at: number;
+  deleted_at?: number | null;
 };
 export type Message = {
   id: string;
@@ -22,12 +23,27 @@ export type Message = {
   created_at: number;
 };
 export type PlanInput = {
+  draft_id?: string;
   message_id: string;
   duration_minutes: number;
   music_source: "library" | "ai";
   target_emotion: "auto" | "平静" | "喜悦" | "友爱" | "自信";
   credential_mode: "platform" | "byok";
   voice_mode: "tts" | "pure_music";
+  guidance_style?: string;
+  language_density?: string;
+};
+export type PlanDraft = {
+  id?: string;
+  summary?: string;
+  duration_minutes: number;
+  music_source: "library" | "ai";
+  target_emotion: "auto" | "平静" | "喜悦" | "友爱" | "自信";
+  credential_mode: "platform" | "byok";
+  voice_mode: "tts" | "pure_music";
+  guidance_style?: string;
+  language_density?: string;
+  updated_at?: number;
 };
 export type StoredPlan = PlanInput & {
   id: string;
@@ -42,12 +58,14 @@ export type ConversationJob = {
   created_at: number;
   finished_at: number | null;
   work_id: string | null;
+  is_favorite?: boolean | number | null;
 };
 export type ConversationDetail = {
   conversation: Conversation;
   messages: Message[];
   plans: StoredPlan[];
   jobs: ConversationJob[];
+  draft?: PlanDraft | null;
 };
 export type JobEvent = {
   id: number;
@@ -76,6 +94,15 @@ export type AdminUser = {
   status: string;
   daily_limit: number;
   created_at: number;
+};
+export type WorkSummary = {
+  id: string;
+  job_id: string;
+  title: string;
+  expires_at: number | null;
+  is_favorite: boolean;
+  created_at: number;
+  audio_available: boolean;
 };
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api/v1";
@@ -149,13 +176,30 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  listConversations: () => request<{ items: Conversation[] }>("/conversations"),
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  listConversations: (includeDeleted = false) =>
+    request<{ items: Conversation[] }>(
+      `/conversations${includeDeleted ? "?trash=true" : ""}`,
+    ),
   getConversation: (id: string) =>
     request<ConversationDetail>(`/conversations/${id}`),
   createConversation: (title = "新对话") =>
     request<{ id: string; title: string }>("/conversations", {
       method: "POST",
       body: JSON.stringify({ title }),
+    }),
+  updateConversation: (id: string, title: string) =>
+    request<{ id: string; title: string }>(`/conversations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+  deleteConversation: (id: string) =>
+    request<{ deleted: true; purge_at?: number }>(`/conversations/${id}`, {
+      method: "DELETE",
+    }),
+  restoreConversation: (id: string) =>
+    request<{ restored: true }>(`/conversations/${id}/restore`, {
+      method: "POST",
     }),
   sendMessage: (conversationId: string, content: string) =>
     request<{
@@ -175,6 +219,33 @@ export const api = {
       `/conversations/${conversationId}/plans`,
       { method: "POST", body: JSON.stringify(plan) },
     ),
+  createPlanDraft: (
+    conversationId: string,
+    input: { message_id: string; credential_mode: "platform" | "byok" },
+  ) =>
+    request<PlanDraft | { draft: PlanDraft; summary?: string }>(
+      `/conversations/${conversationId}/plan-draft`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+  updatePlanDraft: (
+    conversationId: string,
+    patch: Partial<
+      Pick<
+        PlanDraft,
+        | "duration_minutes"
+        | "music_source"
+        | "target_emotion"
+        | "credential_mode"
+        | "voice_mode"
+        | "guidance_style"
+        | "language_density"
+      >
+    >,
+  ) =>
+    request<{ draft: PlanDraft }>(
+      `/conversations/${conversationId}/plan-draft`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    ),
   createJob: (planId: string) =>
     request<{ id: string; status: string }>(`/plans/${planId}/jobs`, {
       method: "POST",
@@ -182,6 +253,10 @@ export const api = {
   getJob: (jobId: string) => request<JobResult>(`/jobs/${jobId}`),
   cancelJob: (jobId: string) =>
     request<{ status: string }>(`/jobs/${jobId}/cancel`, { method: "POST" }),
+  retryJob: (jobId: string) =>
+    request<{ id: string; status: string }>(`/jobs/${jobId}/retry`, {
+      method: "POST",
+    }),
   saveCredentials: (credentials: {
     deepseek_api_key: string;
     minimax_api_key: string;
@@ -197,6 +272,10 @@ export const api = {
     request<{ is_favorite: boolean }>(`/works/${workId}/favorite`, {
       method: favorite ? "POST" : "DELETE",
     }),
+  listWorks: (favoritesOnly = false) =>
+    request<{ items: WorkSummary[] }>(
+      `/works${favoritesOnly ? "?favorites_only=true" : ""}`,
+    ),
   downloadUrl: (workId: string, format: "mp3" | "wav" | "txt") =>
     `${API_BASE}/works/${workId}/download?format=${format}`,
   adminUsers: () => request<{ items: AdminUser[] }>("/admin/users"),
@@ -252,6 +331,7 @@ export async function streamAssistant(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let completed = false;
   while (true) {
     const { done, value } = await reader.read();
     buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
@@ -274,7 +354,10 @@ export async function streamAssistant(
           code: "assistant_unavailable",
           message: "助手暂时无法回复，请稍后重试",
         } satisfies ApiError;
-      if (event === "done") return;
+      if (event === "done") {
+        completed = true;
+        return;
+      }
       if (data) {
         const payload = JSON.parse(data) as { delta?: string };
         if (payload.delta) onDelta(payload.delta);
@@ -282,4 +365,9 @@ export async function streamAssistant(
     }
     if (done) break;
   }
+  if (!completed)
+    throw {
+      code: "assistant_stream_interrupted",
+      message: "回复连接意外中断，请重试",
+    } satisfies ApiError;
 }

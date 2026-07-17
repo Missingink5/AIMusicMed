@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -25,6 +26,8 @@ PASSWORD = "correct horse battery staple"
 
 class WebAppTests(unittest.TestCase):
     def setUp(self):
+        self.environment = patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""})
+        self.environment.start()
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.settings = Settings(
@@ -43,6 +46,7 @@ class WebAppTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.temp.cleanup()
+        self.environment.stop()
 
     def admin_login(self):
         code = self.client.post("/auth/code/request", json={"email": ADMIN_EMAIL}).json()["verification_code"]
@@ -292,6 +296,11 @@ class WebAppTests(unittest.TestCase):
         work_id = complete.json()["work_id"]
         self.assertEqual(owner.get(f"/works/{work_id}/download?format=wav").content, b"RIFF-test-audio")
         self.assertEqual(owner.get(f"/works/{work_id}/download?format=mp3").content, b"mp3-test-audio")
+        ranged = owner.get(
+            f"/works/{work_id}/download?format=mp3", headers={"Range": "bytes=0-2"}
+        )
+        self.assertEqual(ranged.status_code, 206)
+        self.assertEqual(ranged.content, b"mp3")
         self.assertIn("引导词", owner.get(f"/works/{work_id}/download?format=txt").text)
         self.assertEqual(stranger.get(f"/works/{work_id}/download").status_code, 404)
         self.assertEqual(self.client.get(f"/works/{work_id}/download").status_code, 404)
@@ -324,7 +333,23 @@ class WebAppTests(unittest.TestCase):
             conn.commit()
         self.assertEqual(owner.get(f"/works/{work_id}/download").status_code, 410)
         self.assertEqual(owner.get(f"/works/{work_id}/download?format=txt").status_code, 200)
+        self.assertEqual(owner.post(f"/works/{work_id}/favorite").status_code, 410)
+        with closing(sqlite3.connect(self.settings.database_path)) as conn:
+            conn.execute("UPDATE works SET expires_at=? WHERE id=?", (2**31, work_id))
+            conn.commit()
         self.assertTrue(owner.post(f"/works/{work_id}/favorite").json()["is_favorite"])
+        with closing(sqlite3.connect(self.settings.database_path)) as conn:
+            conn.execute("UPDATE works SET expires_at=0 WHERE id=?", (work_id,))
+            conn.commit()
+        self.assertEqual(owner.get(f"/works/{work_id}/download").status_code, 200)
+        with closing(sqlite3.connect(self.settings.database_path)) as conn:
+            conversation_id = conn.execute(
+                "SELECT p.conversation_id FROM jobs j JOIN plans p ON p.id=j.plan_id WHERE j.id=?",
+                (job,),
+            ).fetchone()[0]
+        self.assertEqual(owner.delete(f"/conversations/{conversation_id}").status_code, 200)
+        favorites = owner.get("/works?favorites_only=true").json()["items"]
+        self.assertEqual([item["id"] for item in favorites], [work_id])
         self.assertEqual(owner.get(f"/works/{work_id}/download").status_code, 200)
 
     def test_conversation_restore_is_owner_scoped(self):
@@ -338,6 +363,171 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(restored.status_code, 200)
         self.assertEqual(restored.json()["plans"][0]["id"], plan_id)
         self.assertEqual(stranger.get(f"/conversations/{conversation_id}").status_code, 404)
+
+    def test_conversation_search_rename_trash_restore_and_purge(self):
+        owner = self.create_user_client("history-v2@example.com")
+        stranger = self.create_user_client("history-v2-stranger@example.com")
+        conversation = owner.post("/conversations", json={"title": "工作压力"}).json()["id"]
+        message = owner.post(
+            f"/conversations/{conversation}/messages", json={"content": "今天工作让我很紧张"}
+        ).json()["id"]
+        draft = owner.post(f"/conversations/{conversation}/plan-draft", json={}).json()
+        renamed = owner.patch(
+            f"/conversations/{conversation}", json={"title": "周五的工作压力"}
+        )
+        self.assertEqual(renamed.json()["title"], "周五的工作压力")
+        self.assertEqual(
+            [item["id"] for item in owner.get("/conversations?q=周五").json()["items"]],
+            [conversation],
+        )
+        self.assertEqual(
+            stranger.patch(f"/conversations/{conversation}", json={"title": "越权"}).status_code,
+            404,
+        )
+        deleted = owner.delete(f"/conversations/{conversation}")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(owner.get(f"/conversations/{conversation}").status_code, 404)
+        self.assertEqual(
+            owner.get("/conversations?include_deleted=true").json()["items"][0]["id"],
+            conversation,
+        )
+        self.assertEqual(owner.post(f"/conversations/{conversation}/restore").status_code, 200)
+        owner.delete(f"/conversations/{conversation}")
+        with closing(sqlite3.connect(self.settings.database_path)) as conn:
+            conn.execute(
+                "UPDATE conversations SET purge_at=0 WHERE id=?", (conversation,)
+            )
+            conn.commit()
+        owner.get("/conversations?include_deleted=true")
+        with closing(sqlite3.connect(self.settings.database_path)) as conn:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM plan_drafts WHERE id=?", (draft["id"],)
+                ).fetchone()
+            )
+            self.assertIsNone(
+                conn.execute("SELECT content FROM messages WHERE id=?", (message,)).fetchone()
+            )
+
+    def test_plan_draft_updates_in_place_and_worker_receives_full_context(self):
+        user = self.create_user_client("draft@example.com")
+        conversation = user.post("/conversations", json={"title": "倾诉"}).json()["id"]
+        first = user.post(
+            f"/conversations/{conversation}/messages", json={"content": "最近工作压力很大"}
+        ).json()["id"]
+        first_draft = user.post(f"/conversations/{conversation}/plan-draft", json={}).json()
+        self.assertEqual(first_draft["primary_emotion"], "焦虑")
+        user.patch(
+            f"/conversations/{conversation}/plan-draft",
+            json={
+                "language_density": "less_language", "duration_minutes": 10,
+                "guidance_style": "温柔陪伴",
+            },
+        )
+        second = user.post(
+            f"/conversations/{conversation}/messages",
+            json={"content": "我说完了，希望最后更有自信"},
+        ).json()["id"]
+        refreshed = user.post(f"/conversations/{conversation}/plan-draft", json={}).json()
+        self.assertEqual(refreshed["id"], first_draft["id"])
+        detail = user.get(f"/conversations/{conversation}").json()
+        self.assertEqual(detail["draft"]["id"], first_draft["id"])
+        plan_payload = {
+            "message_id": second,
+            "draft_id": refreshed["id"],
+            "duration_minutes": refreshed["duration_minutes"],
+            "music_source": refreshed["music_source"],
+            "target_emotion": refreshed["target_emotion"],
+            "credential_mode": "platform",
+            "voice_mode": refreshed["voice_mode"],
+            "guidance_style": "温柔陪伴",
+            "language_density": "less_language",
+        }
+        plan_response = user.post(
+            f"/conversations/{conversation}/plans", json=plan_payload
+        ).json()
+        plan = plan_response["id"]
+        repeated = user.post(
+            f"/conversations/{conversation}/plans", json=plan_payload
+        ).json()
+        self.assertEqual(repeated["id"], plan)
+        self.assertTrue(repeated["idempotent_replay"])
+        self.assertEqual(
+            user.patch(
+                f"/conversations/{conversation}/plan-draft",
+                json={"duration_minutes": 15},
+            ).status_code,
+            409,
+        )
+        user.post(f"/plans/{plan}/jobs")
+        claim = self.client.post("/internal/worker/claim", headers=self.worker_headers()).json()
+        self.assertIn("最近工作压力很大", claim["content"])
+        self.assertIn("我说完了", claim["content"])
+        self.assertEqual(claim["guidance_style"], "温柔陪伴")
+        self.assertEqual(claim["language_density"], "less_language")
+        self.assertNotEqual(first, second)
+
+    @patch("webapp.app.requests.post")
+    def test_plan_draft_uses_deepseek_structured_context(self, post):
+        user = self.create_user_client("planner@example.com")
+        user.put(
+            "/settings/credentials",
+            json={"deepseek_api_key": "deepseek-key", "minimax_api_key": "minimax-key"},
+        )
+        conversation = user.post("/conversations", json={"title": "规划"}).json()["id"]
+        user.post(
+            f"/conversations/{conversation}/messages", json={"content": "我先说工作的压力"}
+        )
+        user.post(
+            f"/conversations/{conversation}/messages", json={"content": "现在我说完了"}
+        )
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "summary": "用户表达了工作压力，也确认倾诉完毕。",
+                "primary_emotion": "焦虑",
+                "emotion_path": "从紧绷走向安定",
+                "duration_minutes": 10,
+                "music_source": "library",
+                "target_emotion": "平静",
+                "voice_mode": "tts",
+                "guidance_style": "温柔陪伴",
+                "language_density": "less_language",
+            }, ensure_ascii=False)}}]
+        }
+        post.return_value = response
+        draft = user.post(
+            f"/conversations/{conversation}/plan-draft",
+            json={"credential_mode": "byok"},
+        ).json()
+        self.assertEqual(draft["duration_minutes"], 10)
+        self.assertEqual(draft["language_density"], "less_language")
+        sent_messages = post.call_args.kwargs["json"]["messages"]
+        sent_text = json.dumps(sent_messages, ensure_ascii=False)
+        self.assertIn("我先说工作的压力", sent_text)
+        self.assertIn("现在我说完了", sent_text)
+
+    def test_failed_job_retry_does_not_consume_platform_quota(self):
+        user = self.create_user_client("retry@example.com")
+        user_id = user.get("/me").json()["id"]
+        with closing(sqlite3.connect(self.settings.database_path)) as conn:
+            conn.execute("UPDATE users SET daily_limit=1 WHERE id=?", (user_id,))
+            conn.commit()
+        plan = self.create_plan(user).json()["id"]
+        job = user.post(f"/plans/{plan}/jobs").json()["id"]
+        self.client.post("/internal/worker/claim", headers=self.worker_headers())
+        self.client.post(
+            f"/internal/worker/jobs/{job}/fail",
+            headers=self.worker_headers(),
+            json={"error_code": "provider_unavailable"},
+        )
+        failed = user.get(f"/jobs/{job}").json()["job"]
+        self.assertTrue(failed["retry_allowed"])
+        self.assertGreaterEqual(failed["elapsed_seconds"], 0)
+        retried = user.post(f"/jobs/{job}/retry")
+        self.assertEqual(retried.status_code, 201)
+        self.assertEqual(retried.json()["retry_of_job_id"], job)
 
     @patch("webapp.app.requests.post")
     def test_assistant_reply_streams_and_is_persisted(self, post):

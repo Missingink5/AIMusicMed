@@ -415,11 +415,18 @@ class MeditationApp:
             manifest.append(item)
         return manifest
 
-    def _guidance_speech_budget(self, music_duration_seconds: float) -> float:
+    def _guidance_speech_budget(
+        self,
+        music_duration_seconds: float,
+        language_density: str = "balanced",
+    ) -> float:
         """按实际音乐长度计算目标朗读时长，并保留开头与尾部纯音乐。"""
         duration = max(1.0, float(music_duration_seconds))
         available = duration - self.config.audio.speech_start_delay_seconds
-        return max(1.0, min(duration - 10.0, duration * 0.875, available))
+        normal_budget = max(1.0, min(duration - 10.0, duration * 0.875, available))
+        if language_density == "less_language":
+            return max(1.0, normal_budget * 0.45)
+        return normal_budget
 
     def _guidance_target_characters(self, speech_seconds: float) -> int:
         chars_per_second = 3.5 * self.config.audio.minimax_speed * 0.85
@@ -468,13 +475,31 @@ class MeditationApp:
         validated.sort(key=lambda item: order[item["segment_id"]])
         return validated
 
-    def generate_guidance_for_music(self, user_input: str, plan: Dict, music_info: List[Dict]) -> List[Dict]:
+    def generate_guidance_for_music(
+        self,
+        user_input: str,
+        plan: Dict,
+        music_info: List[Dict],
+        guidance_style: str = "auto",
+        language_density: str = "balanced",
+    ) -> List[Dict]:
         """Generate one grounded guidance segment after the concrete music is selected."""
+        guidance_style_labels = {
+            "auto": "根据情绪与音乐自动选择",
+            "gentle": "温柔陪伴",
+            "breath_awareness": "呼吸觉察",
+            "body_scan": "身体扫描",
+            "gentle_companionship": "温柔陪伴",
+            "positive_imagery": "积极意象",
+        }
+        style_label = guidance_style_labels.get(guidance_style, guidance_style_labels["auto"])
+        density_label = "减少语言，留更多纯音乐空间" if language_density == "less_language" else "均衡引导"
         manifest = self._public_music_manifest(music_info)
         prompt_manifest = []
         for item in manifest:
             target_speech_seconds = self._guidance_speech_budget(
-                item["render_duration_seconds"]
+                item["render_duration_seconds"],
+                language_density,
             )
             target_characters = self._guidance_target_characters(target_speech_seconds)
             prompt_manifest.append(
@@ -492,6 +517,10 @@ class MeditationApp:
                 "user_context": user_input,
                 "emotion_analysis": plan["emotion_analysis"],
                 "emotion_journey": plan["emotion_journey"],
+                "guidance_preferences": {
+                    "style": style_label,
+                    "language_density": density_label,
+                },
                 "music_manifest": prompt_manifest,
             },
             ensure_ascii=False,
@@ -504,6 +533,7 @@ class MeditationApp:
             "只返回JSON对象，不要返回代码围栏，顶层不得直接返回数组。JSON对象必须包含scripts数组；"
             "每项必须原样返回segment_id、music_ref、grounding_fingerprint和text。"
             "每段text应达到target_text_characters的90%-100%，朗读时长接近target_speech_seconds，"
+            "严格遵循guidance_preferences中的引导方式与语言密度；减少语言时不要用重复句填满音乐。"
             "使用自然完整的冥想指导语扩展篇幅，不得机械重复句子。"
         )
         for attempt in range(2):
@@ -554,7 +584,13 @@ class MeditationApp:
             guidance.append({**item, "text": text_value, "guidance_source": "local_fallback"})
         return guidance
 
-    async def generate_speech_adaptive(self, script_prompts: List, music_info: List[Dict], user_input: str = "") -> List[str]:
+    async def generate_speech_adaptive(
+        self,
+        script_prompts: List,
+        music_info: List[Dict],
+        user_input: str = "",
+        language_density: str = "balanced",
+    ) -> List[str]:
         """根据音乐时长自适应生成语音文件"""
         self.logger.info("开始自适应语音生成")
         print("🔊 正在根据音乐时长生成自适应语音...")
@@ -579,7 +615,7 @@ class MeditationApp:
                 text_content = str(segment)
 
             music_duration = music['duration_seconds']
-            speech_budget = self._guidance_speech_budget(music_duration)
+            speech_budget = self._guidance_speech_budget(music_duration, language_density)
             adjusted_text = self._adjust_text_for_duration(
                 text_content,
                 speech_budget,
@@ -1253,6 +1289,8 @@ class MeditationApp:
         target_emotion: Optional[str] = None,
         include_guidance: bool = True,
         prepared_plan: Optional[Dict] = None,
+        guidance_style: str = "auto",
+        language_density: str = "balanced",
     ) -> Tuple[str, Dict]:
         """
         创建完整的冥想会话
@@ -1274,6 +1312,8 @@ class MeditationApp:
             )
         if music_source not in {"library", "ai"}:
             raise MeditationAppError(f"不支持的音乐来源: {music_source}")
+        if language_density not in {"balanced", "less_language"}:
+            raise MeditationAppError(f"不支持的语言密度: {language_density}")
         if include_guidance and not self.config.api.minimax_api_key:
             raise MeditationAppError("未配置 MiniMax TTS 密钥: MINIMAX_API_KEY")
         if include_guidance and not str(self.config.audio.minimax_voice_id).strip():
@@ -1288,6 +1328,8 @@ class MeditationApp:
         session_info = self.get_session_info(
             user_input, duration_minutes, music_source, ai_music_provider
         )
+        session_info["guidance_style"] = guidance_style
+        session_info["language_density"] = language_density
         
         self.logger.info(f"开始创建冥想会话: {session_info}")
         print(f"🧘‍♀️ 开始创建 {duration_minutes} 分钟的冥想会话...")
@@ -1356,7 +1398,13 @@ class MeditationApp:
             if include_guidance:
                 print("📝 开始生成与具体音乐对齐的引导词...")
                 self._emit_progress("generating_guidance")
-                script_prompts = self.generate_guidance_for_music(user_input, prompts_data, music_info)
+                script_prompts = self.generate_guidance_for_music(
+                    user_input,
+                    prompts_data,
+                    music_info,
+                    guidance_style=guidance_style,
+                    language_density=language_density,
+                )
 
                 # 4. 将对齐后的引导词交给TTS
                 self._check_cancelled()
@@ -1366,6 +1414,7 @@ class MeditationApp:
                     script_prompts,
                     music_info,
                     user_input,
+                    language_density=language_density,
                 )
             else:
                 script_prompts = []
