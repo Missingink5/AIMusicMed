@@ -1,6 +1,6 @@
 **
-!*.py
-!requirements.txt
-!requirements-web.txt
-!webapp/
-!webapp/**
+!/*.py
+!/requirements.txt
+!/requirements-web.txt
+!/webapp/
+!/webapp/**
