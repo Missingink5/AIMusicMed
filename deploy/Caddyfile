@@ -3,12 +3,7 @@
 }
 
 {$AIMUSICMED_DOMAIN} {
-	encode zstd gzip {
-		skip_encoding audio/mpeg audio/wav audio/mp3
-		skip_encoding image/png image/jpeg image/webp image/svg+xml image/gif
-		skip_encoding application/javascript text/css font/woff font/woff2
-		skip_encoding application/octet-stream
-	}
+	encode zstd gzip
 
 	# Worker endpoints stay reachable only on Docker's private api:8000 network.
 	handle /api/v1/internal/* {
