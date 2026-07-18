@@ -149,9 +149,10 @@ class MeditationApp:
                     "max_tokens": max_tokens,
                     "stream": False,
                     "response_format": {"type": "json_object"},
-                    # Enable thinking with a moderate budget so the model can
-                    # reason about guidance quality without consuming the output window.
-                    "thinking": {"type": "enabled"},
+                    # Structured JSON tasks don't benefit from long reasoning;
+                    # disabling thinking keeps temperature active and reduces
+                    # latency / token waste / empty-content truncation.
+                    "thinking": {"type": "disabled"},
                 },
                 timeout=getattr(self.config.api, "deepseek_timeout_seconds", 180),
             )
@@ -246,6 +247,20 @@ class MeditationApp:
             raise ValueError(
                 f"DeepSeek返回的JSON顶层必须是对象，实际为{type(result).__name__}"
             )
+        # Record token usage for diagnostics.
+        usage = payload.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        reasoning_content = message.get("reasoning_content") or ""
+        self._last_deepseek_usage = {
+            "finish_reason": finish_reason,
+            "max_tokens": max_tokens,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "reasoning_tokens": details.get("reasoning_tokens"),
+            "content_chars": len(content),
+            "reasoning_chars": len(reasoning_content),
+            "request_id": request_id,
+        }
         return result
 
     def analyze_emotion_with_ai(self, user_input: str) -> Dict:
@@ -502,8 +517,16 @@ class MeditationApp:
     @staticmethod
     @staticmethod
     def _guidance_max_tokens(prompt_manifest: List[Dict]) -> int:
-        """No token cap — let DeepSeek use the full output window."""
-        return 262144
+        """Dynamic token budget based on expected output characters.
+
+        For a typical 3-segment JSON (~125 chars each) this gives ~4-8k tokens,
+        which is ample headroom.  Truncation recovery doubles from this base.
+        """
+        expected_chars = sum(
+            int(item.get("target_text_characters", 200)) for item in prompt_manifest
+        )
+        estimated_output = max(1024, expected_chars * 2)
+        return min(16384, max(4096, estimated_output + 2048))
 
     @staticmethod
     def _classify_guidance_segments(
@@ -557,34 +580,32 @@ class MeditationApp:
                 continue
 
             text_len = len(text_value)
-            min_loose = max(1, int(target_chars * 0.60))
-            min_strict = max(1, int(target_chars * 0.85))
-            max_chars = max(1, int(target_chars * 1.10))
+            min_acceptable = max(1, int(target_chars * 0.60))
+            min_preferred  = max(1, int(target_chars * 0.80))
+            max_chars      = max(1, int(target_chars * 1.15))
 
-            if text_len < min_loose:
-                # Too short — needs full regeneration
+            if text_len < min_acceptable:
+                # Too short — needs AI regeneration
                 invalid_segments.append({
                     "segment_id": segment_id,
                     "failure_reason": "segment_too_short",
-                    "detail": f"文本长度 {text_len} 字，最低要求 {min_loose} 字（<60%，需重新生成）",
+                    "detail": f"文本长度 {text_len} 字，最低要求 {min_acceptable} 字（<60%，需重新生成）",
                     "target_chars": target_chars,
                     "previous_text": text_value,
                 })
-            elif text_len < min_strict:
-                # Borderline — ask AI to expand existing text
-                invalid_segments.append({
-                    "segment_id": segment_id,
-                    "failure_reason": "segment_too_short",
-                    "detail": f"文本长度 {text_len} 字，最低要求 {min_strict} 字（60-85%区间，请扩写）",
-                    "target_chars": target_chars,
-                    "previous_text": text_value,
+            elif text_len < min_preferred:
+                # Acceptable but below target — pass through, let
+                # _adjust_text_for_duration handle the gap later.
+                valid_segments.append({
+                    **reference, "text": text_value,
+                    "guidance_source": "ai_adjusted_locally",
                 })
             elif text_len > max_chars:
                 # Too long — ask AI to compress
                 invalid_segments.append({
                     "segment_id": segment_id,
                     "failure_reason": "segment_too_long",
-                    "detail": f"文本长度 {text_len} 字，上限 {max_chars} 字（>110%，请压缩）",
+                    "detail": f"文本长度 {text_len} 字，上限 {max_chars} 字（>115%，请压缩）",
                     "target_chars": target_chars,
                     "previous_text": text_value,
                 })
@@ -670,6 +691,7 @@ class MeditationApp:
         valid_by_id: dict = {}
         pending: list = []
         last_error = None
+        error_log: list = []  # [{attempt, category, detail, usage}]
 
         # ---- Token budgets (full and repair are tracked independently) -------
         full_payload = json.dumps({**base_request, "music_manifest": prompt_manifest}, ensure_ascii=False)
@@ -739,6 +761,7 @@ class MeditationApp:
                     self._last_guidance_stats = {
                         "attempts": attempt + 1,
                         "last_error_type": None,
+                        "error_log": error_log,
                     }
                     print(f"✅ AI已按 {len(ordered)} 首具体音乐生成逐段引导词 "
                           f"(第{attempt + 1}轮)")
@@ -752,20 +775,28 @@ class MeditationApp:
             except GuidanceTruncatedError as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次截断: %s", attempt + 1, exc)
+                error_log.append({"attempt": attempt + 1, "category": "output_truncated",
+                                  "detail": str(exc)[:200],
+                                  "usage": getattr(self, "_last_deepseek_usage", None)})
                 if repair_requested and pending:
-                    repair_max_tokens = min(262144, max(mt + 1024, int(mt * 1.5)))
+                    repair_max_tokens = min(8192, max(mt + 1024, int(mt * 1.5)))
                 elif not repair_requested:
-                    full_max_tokens = min(262144, max(full_max_tokens + 1024, int(full_max_tokens * 1.5)))
+                    full_max_tokens = min(32768, max(full_max_tokens + 1024, int(full_max_tokens * 1.5)))
             except GuidanceTransportError as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次传输错误: %s", attempt + 1, exc)
-                # Keep current mode; backoff applied at top of next iteration.
+                error_log.append({"attempt": attempt + 1, "category": "network_transport",
+                                  "detail": str(exc)[:200]})
             except GuidanceValidationError as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次校验失败: %s", attempt + 1, exc)
+                error_log.append({"attempt": attempt + 1, "category": "validation_error",
+                                  "detail": str(exc)[:200]})
             except Exception as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次生成失败: %s", attempt + 1, exc)
+                error_log.append({"attempt": attempt + 1, "category": "unknown_error",
+                                  "detail": f"{type(exc).__name__}: {str(exc)[:200]}"})
 
         # ---- Fallback: fill remaining pending segments with local templates ----
         if not valid_by_id and not pending:
@@ -784,6 +815,7 @@ class MeditationApp:
         self._last_guidance_stats = {
             "attempts": attempt + 1,
             "last_error_type": type(last_error).__name__ if last_error else None,
+            "error_log": error_log,
         }
         return result
 
@@ -1819,6 +1851,7 @@ class MeditationApp:
                     ],
                     "attempts": getattr(self, "_last_guidance_stats", {}).get("attempts"),
                     "last_error_type": getattr(self, "_last_guidance_stats", {}).get("last_error_type"),
+                    "error_log": getattr(self, "_last_guidance_stats", {}).get("error_log", []),
                 },
                 "guidance_text": "\n\n".join(
                     script.get("text", "").strip() for script in script_prompts
