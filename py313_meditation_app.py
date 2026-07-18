@@ -517,16 +517,8 @@ class MeditationApp:
     @staticmethod
     @staticmethod
     def _guidance_max_tokens(prompt_manifest: List[Dict]) -> int:
-        """Dynamic token budget based on expected output characters.
-
-        For a typical 3-segment JSON (~125 chars each) this gives ~4-8k tokens,
-        which is ample headroom.  Truncation recovery doubles from this base.
-        """
-        expected_chars = sum(
-            int(item.get("target_text_characters", 200)) for item in prompt_manifest
-        )
-        estimated_output = max(1024, expected_chars * 2)
-        return min(16384, max(4096, estimated_output + 2048))
+        """No token cap — use the maximum the API allows."""
+        return 262144
 
     @staticmethod
     def _classify_guidance_segments(
@@ -779,9 +771,9 @@ class MeditationApp:
                                   "detail": str(exc)[:200],
                                   "usage": getattr(self, "_last_deepseek_usage", None)})
                 if repair_requested and pending:
-                    repair_max_tokens = min(8192, max(mt + 1024, int(mt * 1.5)))
+                    repair_max_tokens = min(262144, max(mt + 1024, int(mt * 1.5)))
                 elif not repair_requested:
-                    full_max_tokens = min(32768, max(full_max_tokens + 1024, int(full_max_tokens * 1.5)))
+                    full_max_tokens = min(262144, max(full_max_tokens + 1024, int(full_max_tokens * 1.5)))
             except GuidanceTransportError as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次传输错误: %s", attempt + 1, exc)

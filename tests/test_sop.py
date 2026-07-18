@@ -259,7 +259,7 @@ class SopPlanningTests(unittest.TestCase):
         segment = request_payload["music_manifest"][0]
         self.assertEqual(segment["target_speech_seconds"], 50.0)
         self.assertEqual(segment["target_text_characters"], 119)
-        self.assertGreaterEqual(app._request_deepseek_json.call_args.args[2], 4096)
+        self.assertGreaterEqual(app._request_deepseek_json.call_args.args[2], 262144)
         self.assertEqual(app._request_deepseek_json.call_count, 1)
 
     def test_guidance_budget_scales_from_60_to_400_actual_seconds(self):
@@ -319,7 +319,7 @@ class SopPlanningTests(unittest.TestCase):
             {"target_text_characters": 833},
         ]
 
-        self.assertGreaterEqual(MeditationApp._guidance_max_tokens(prompt_manifest), 4096)
+        self.assertGreaterEqual(MeditationApp._guidance_max_tokens(prompt_manifest), 262144)
 
     def test_duplicate_ai_segment_ids_cannot_realign_to_other_music(self):
         app = MeditationApp.__new__(MeditationApp)
