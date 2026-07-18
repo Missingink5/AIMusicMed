@@ -502,8 +502,8 @@ class MeditationApp:
     @staticmethod
     @staticmethod
     def _guidance_max_tokens(prompt_manifest: List[Dict]) -> int:
-        """No token cap — let DeepSeek use the full 64k ceiling."""
-        return 65536
+        """No token cap — let DeepSeek use the full output window."""
+        return 262144
 
     @staticmethod
     def _classify_guidance_segments(
@@ -753,9 +753,9 @@ class MeditationApp:
                 last_error = exc
                 self.logger.warning("引导词第%s次截断: %s", attempt + 1, exc)
                 if repair_requested and pending:
-                    repair_max_tokens = min(65536, max(mt + 1024, int(mt * 1.5)))
+                    repair_max_tokens = min(262144, max(mt + 1024, int(mt * 1.5)))
                 elif not repair_requested:
-                    full_max_tokens = min(65536, max(full_max_tokens + 1024, int(full_max_tokens * 1.5)))
+                    full_max_tokens = min(262144, max(full_max_tokens + 1024, int(full_max_tokens * 1.5)))
             except GuidanceTransportError as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次传输错误: %s", attempt + 1, exc)
