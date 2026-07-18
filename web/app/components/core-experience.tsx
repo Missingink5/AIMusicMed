@@ -98,6 +98,11 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   const [favoriteWorks, setFavoriteWorks] = useState<WorkSummary[]>([]);
   const [availableVoices, setAvailableVoices] = useState<VoiceAsset[]>([]);
   const [availableTracks, setAvailableTracks] = useState<MusicTrack[]>([]);
+  const [voicesLoaded, setVoicesLoaded] = useState(false);
+  const [tracksLoaded, setTracksLoaded] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const latestPlanRef = useRef<PlanDraft | null>(plan);
+  latestPlanRef.current = plan;
   const polling = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollNow = useRef<(() => void) | null>(null);
   const pollingBusy = useRef(false);
@@ -152,6 +157,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   }, [notifyOnComplete]);
 
   const reloadCaches = useCallback(async () => {
+    if (catalogLoading) return;
+    setCatalogLoading(true);
     const results = await Promise.allSettled([
       api.listVoices(),
       api.listMusicTracks("private"),
@@ -161,11 +168,14 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
     if (v.status === "fulfilled") {
       setAvailableVoices(v.value.items.filter((voice) => voice.status === "ready"));
     }
+    setVoicesLoaded(true);
     const tracks: MusicTrack[] = [];
     if (priv.status === "fulfilled") tracks.push(...priv.value.items);
     if (pub.status === "fulfilled") tracks.push(...pub.value.items);
-    if (tracks.length) setAvailableTracks(tracks);
-  }, []);
+    setAvailableTracks(tracks);
+    setTracksLoaded(true);
+    setCatalogLoading(false);
+  }, [catalogLoading]);
 
   const pollJob = useCallback(
     (id: string, ownerConversationId: string) => {
@@ -250,6 +260,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         const latest = detail.jobs.at(-1);
         setJobId(latest?.id ?? null);
         setWorkId(latest?.work_id ?? null);
+        setWorkTitle(latest?.work_title || "我的音乐冥想");
         setWorkFavorite(Boolean(latest?.is_favorite));
         setJobCreatedAt(latest?.created_at ?? null);
         if (latest?.status === "succeeded") {
@@ -305,6 +316,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         if (setup === "optional") setView("account");
         // Preload voice/track lists once so PlanCard doesn't re-fetch on mount.
         // Use Promise.allSettled so one failure doesn't block the other.
+        if (catalogLoading) return;
+        setCatalogLoading(true);
         void Promise.allSettled([
           api.listVoices(),
           api.listMusicTracks("private"),
@@ -314,10 +327,14 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
           if (v.status === "fulfilled") {
             setAvailableVoices(v.value.items.filter((voice) => voice.status === "ready"));
           }
+          setVoicesLoaded(true);
           const tracks: MusicTrack[] = [];
           if (priv.status === "fulfilled") tracks.push(...priv.value.items);
           if (pub.status === "fulfilled") tracks.push(...pub.value.items);
-          if (tracks.length) setAvailableTracks(tracks);
+          setAvailableTracks(tracks);
+          setTracksLoaded(true);
+        }).finally(() => {
+          if (!cancelled) setCatalogLoading(false);
         });
       } catch (reason) {
         const apiError = reason as ApiError;
@@ -601,6 +618,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
     setJobId(null);
     setJobEvents([]);
     setWorkId(null);
+    setWorkTitle("我的音乐冥想");
     setWorkFavorite(false);
     setFailure("");
     setError("");
@@ -612,9 +630,13 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   );
 
   function updateEditablePlan(next: React.SetStateAction<PlanDraft>) {
-    setPlan(next);
-    if (!conversationId || !plan?.id) return;
-    const resolved = typeof next === "function" ? next(plan!) : next;
+    // setPlan is useState<PlanDraft | null>, but PlanCard is only rendered
+    // when plan is non-null, so this cast is safe at runtime.
+    setPlan(next as React.SetStateAction<PlanDraft | null>);
+    if (!conversationId) return;
+    const prev = latestPlanRef.current;
+    if (!prev?.id) return;
+    const resolved = typeof next === "function" ? next(prev) : next;
     if (planSaveTimer.current) clearTimeout(planSaveTimer.current);
     planSaveTimer.current = setTimeout(() => {
       void api.updatePlanDraft(conversationId, {

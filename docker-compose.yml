@@ -72,6 +72,8 @@ services:
     build:
       context: .
       dockerfile: deploy/web.Dockerfile
+    environment:
+      NEXT_PUBLIC_SITE_URL: https://aimusicmed.cn
     restart: unless-stopped
     mem_limit: 256m
     logging: *default-logging

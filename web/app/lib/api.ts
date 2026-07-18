@@ -62,6 +62,7 @@ export type ConversationJob = {
   created_at: number;
   finished_at: number | null;
   work_id: string | null;
+  work_title?: string | null;
   is_favorite?: boolean | number | null;
 };
 export type ConversationDetail = {

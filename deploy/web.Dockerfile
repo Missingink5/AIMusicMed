@@ -19,8 +19,10 @@ RUN npm run build
 
 FROM node:22-bookworm-slim AS runtime
 
+ARG NEXT_PUBLIC_SITE_URL=https://aimusicmed.cn
 ENV NODE_ENV=production \
-    PORT=3000
+    PORT=3000 \
+    NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
 
 WORKDIR /app
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./

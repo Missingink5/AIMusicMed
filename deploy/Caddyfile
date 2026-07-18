@@ -18,18 +18,29 @@
 		reverse_proxy web:3000
 	}
 
+	# API responses must never be stored by shared or private caches.
+	@apiResponses {
+		path /api/*
+	}
+	header @apiResponses Cache-Control "no-store"
+
 	# Static assets with content-hash filenames can be cached aggressively.
 	@staticAssets {
 		path /assets/*
 	}
 	header @staticAssets Cache-Control "public, max-age=31536000, immutable"
 
-	# Service worker and manifest must never be cached or the update
-	# cycle breaks.
-	@noCache {
-		path /sw.js /manifest.webmanifest
+	# Service worker must never be cached — stale SW breaks the site.
+	@swFile {
+		path /sw.js
 	}
-	header @noCache Cache-Control "no-cache, no-store, must-revalidate"
+	header @swFile Cache-Control "no-store"
+
+	# Manifest may be revalidated but not cached indefinitely.
+	@manifestFile {
+		path /manifest.webmanifest
+	}
+	header @manifestFile Cache-Control "no-cache"
 
 	# Non-API HTML pages should be revalidated on every navigation.
 	@htmlPages {
