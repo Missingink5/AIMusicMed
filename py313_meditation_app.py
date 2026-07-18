@@ -132,40 +132,48 @@ class MeditationApp:
             raise MeditationAppError("未配置 DeepSeek API Key")
 
         url = f"{self.config.api.deepseek_base_url.rstrip('/')}/chat/completions"
-        response = requests.post(
-            url,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.config.api.deepseek_api_key}",
-            },
-            json={
-                "model": getattr(self.config.api, "deepseek_model", "deepseek-v4-flash"),
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": max_tokens,
-                "stream": False,
-                "response_format": {"type": "json_object"},
-                # Enable thinking with a moderate budget so the model can
-                # reason about guidance quality without consuming the output window.
-                "thinking": {"type": "enabled", "budget_tokens": 4096},
-            },
-            timeout=getattr(self.config.api, "deepseek_timeout_seconds", 180),
-        )
-        # Extract request_id early so error handlers can reference it.
-        resp_headers = getattr(response, "headers", {}) or {}
-        request_id = (
-            resp_headers.get("x-request-id") or resp_headers.get("x-ds-trace-id") or "unknown"
-            if hasattr(resp_headers, "get")
-            else "unknown"
-        )
         try:
+            response = requests.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.config.api.deepseek_api_key}",
+                },
+                json={
+                    "model": getattr(self.config.api, "deepseek_model", "deepseek-v4-flash"),
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                    "response_format": {"type": "json_object"},
+                    # Enable thinking with a moderate budget so the model can
+                    # reason about guidance quality without consuming the output window.
+                    "thinking": {"type": "enabled", "budget_tokens": 4096},
+                },
+                timeout=getattr(self.config.api, "deepseek_timeout_seconds", 180),
+            )
+            # Extract request_id early so error handlers can reference it.
+            resp_headers = getattr(response, "headers", {}) or {}
+            request_id = (
+                resp_headers.get("x-request-id") or resp_headers.get("x-ds-trace-id") or "unknown"
+                if hasattr(resp_headers, "get")
+                else "unknown"
+            )
             response.raise_for_status()
+        except requests.Timeout as exc:
+            raise GuidanceTransportError("DeepSeek API 超时") from exc
+        except requests.ConnectionError as exc:
+            raise GuidanceTransportError("DeepSeek API 连接失败") from exc
         except requests.HTTPError as exc:
-            status = response.status_code
-            self.logger.warning("DeepSeek HTTP %s: request_id=%s", status, request_id)
+            status = exc.response.status_code if exc.response is not None else 0
+            req_id = "unknown"
+            if exc.response is not None:
+                h = getattr(exc.response, "headers", {}) or {}
+                req_id = (h.get("x-request-id") or h.get("x-ds-trace-id") or "unknown")
+            self.logger.warning("DeepSeek HTTP %s: request_id=%s", status, req_id)
             if status in (400, 401, 402, 422):
                 raise GuidanceGenerationError(
                     f"DeepSeek API 永久错误 HTTP {status}"
@@ -175,10 +183,6 @@ class MeditationApp:
                     f"DeepSeek API 临时错误 HTTP {status}"
                 ) from exc
             raise GuidanceTransportError(f"DeepSeek API HTTP {status}") from exc
-        except requests.Timeout as exc:
-            raise GuidanceTransportError("DeepSeek API 超时") from exc
-        except requests.ConnectionError as exc:
-            raise GuidanceTransportError("DeepSeek API 连接失败") from exc
         response_body = getattr(response, "content", b"")
         body_bytes = len(response_body) if isinstance(response_body, (bytes, bytearray)) else "unknown"
         try:
@@ -363,6 +367,11 @@ class MeditationApp:
         }
         last_error = None
         for attempt in range(2):
+            # Permanent errors (401/402) → don't waste a second attempt.
+            if isinstance(last_error, GuidanceGenerationError) and not isinstance(
+                last_error, (GuidanceValidationError, GuidanceTransportError, GuidanceTruncatedError)
+            ):
+                break
             try:
                 result = self._request_deepseek_json(
                     "你是冥想音乐制作提示词专家。只根据匿名主题和已锁定的阶段计划，为每段写英文音乐提示词。"
@@ -661,9 +670,10 @@ class MeditationApp:
         pending: list = []
         last_error = None
 
-        # ---- Round 1: full generation ----------------------------------------
+        # ---- Token budgets (full and repair are tracked independently) -------
         full_payload = json.dumps({**base_request, "music_manifest": prompt_manifest}, ensure_ascii=False)
-        max_tokens_full = self._guidance_max_tokens(prompt_manifest)
+        full_max_tokens = self._guidance_max_tokens(prompt_manifest)
+        repair_max_tokens: int = 0
         repair_requested = False
 
         for attempt in range(5):
@@ -675,14 +685,24 @@ class MeditationApp:
             ):
                 break
 
+            # Transient transport errors get exponential backoff.
+            if isinstance(last_error, GuidanceTransportError) and attempt > 0:
+                delay = min(8.0, 2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                self.logger.info("DeepSeek 临时故障，%.1f 秒后重试", delay)
+                time.sleep(delay)
+
             try:
                 if not repair_requested:
                     system_prompt = self._GUIDANCE_FULL_SYSTEM_PROMPT
                     payload = full_payload
                     validation_manifest = prompt_manifest
-                    mt = max_tokens_full
+                    mt = full_max_tokens
                 else:
                     # Repair mode — only send/validate the segments still failing.
+                    if not pending:
+                        # No segments to repair → retry full generation.
+                        repair_requested = False
+                        continue
                     repair_data = {**base_request, "repair_mode": True, "repair_segments": pending}
                     payload = json.dumps(repair_data, ensure_ascii=False)
                     pending_ids = {s["segment_id"] for s in pending}
@@ -692,7 +712,8 @@ class MeditationApp:
                     subset_for_tokens = [
                         {"target_text_characters": s.get("target_chars", 200)} for s in pending
                     ]
-                    mt = self._guidance_max_tokens(subset_for_tokens) + 600
+                    calculated = self._guidance_max_tokens(subset_for_tokens) + 600
+                    mt = repair_max_tokens or calculated
                     system_prompt = self._GUIDANCE_REPAIR_SYSTEM_PROMPT
 
                 if attempt > 0 and last_error is not None:
@@ -723,18 +744,20 @@ class MeditationApp:
                       f"{len(new_invalid)} 段待修复 → 下一轮仅修复失败片段")
                 last_error = None
 
-            except (GuidanceTruncatedError, GuidanceTransportError) as exc:
+            except GuidanceTruncatedError as exc:
                 last_error = exc
-                self.logger.warning("引导词第%s次生成失败(transport/truncate): %s", attempt + 1, exc)
-                if isinstance(exc, GuidanceTruncatedError) and pending:
-                    # Truncated — next attempt uses repair mode with smaller payload.
-                    repair_requested = True
-                    max_tokens_full = min(65536, int(max_tokens_full * 1.5))
-                # else: no segments classified yet → retry full generation.
+                self.logger.warning("引导词第%s次截断: %s", attempt + 1, exc)
+                if repair_requested and pending:
+                    repair_max_tokens = min(65536, max(mt + 1024, int(mt * 1.5)))
+                elif not repair_requested:
+                    full_max_tokens = min(65536, max(full_max_tokens + 1024, int(full_max_tokens * 1.5)))
+            except GuidanceTransportError as exc:
+                last_error = exc
+                self.logger.warning("引导词第%s次传输错误: %s", attempt + 1, exc)
+                # Keep current mode; backoff applied at top of next iteration.
             except GuidanceValidationError as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次校验失败: %s", attempt + 1, exc)
-                # Structural failure → retry same mode.
             except Exception as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次生成失败: %s", attempt + 1, exc)
@@ -816,6 +839,9 @@ class MeditationApp:
                 speech_budget,
                 allow_extension=True,
             )
+            # If AI-generated text was locally adjusted, mark the source accurately.
+            if adjusted_text != text_content and isinstance(segment, dict) and segment.get("guidance_source") == "ai":
+                segment["guidance_source"] = "ai_adjusted_locally"
             prepared_segments.append((adjusted_text, music_duration))
 
         if self.config.audio.tts_backend.lower() != "minimax":
@@ -1758,6 +1784,18 @@ class MeditationApp:
                 "guidance_sources": sorted(
                     {script.get("guidance_source", "unknown") for script in script_prompts}
                 ),
+                "guidance_generation": {
+                    "ai_segment_count": sum(
+                        1 for s in script_prompts if s.get("guidance_source") == "ai"
+                    ),
+                    "fallback_segment_count": sum(
+                        1 for s in script_prompts if s.get("guidance_source") == "local_fallback"
+                    ),
+                    "fallback_segment_ids": [
+                        s["segment_id"] for s in script_prompts
+                        if s.get("guidance_source") == "local_fallback"
+                    ],
+                },
                 "guidance_text": "\n\n".join(
                     script.get("text", "").strip() for script in script_prompts
                     if script.get("text", "").strip()

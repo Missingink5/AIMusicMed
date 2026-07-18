@@ -10,7 +10,14 @@ import requests
 from meditation_sop import build_music_segment_plan, plan_emotion_stages
 from audio_compat import AudioSegment
 import numpy as np
-from py313_meditation_app import MeditationApp, MeditationAppError
+from py313_meditation_app import (
+    MeditationApp,
+    MeditationAppError,
+    GuidanceGenerationError,
+    GuidanceTransportError,
+    GuidanceValidationError,
+    GuidanceTruncatedError,
+)
 from music_generation_backends import MusicGenerationError
 
 
@@ -618,6 +625,204 @@ class SopPlanningTests(unittest.TestCase):
             self.assertEqual(manifest["failed_segment_id"], "stage_03")
             self.assertEqual(len(manifest["segments"]), 2)
             self.assertEqual(len(list(Path(temp_dir).glob("阶段*.wav"))), 2)
+
+    # ------------------------------------------------------------------
+    # Incremental repair regression tests
+    # ------------------------------------------------------------------
+
+    def test_repair_mode_validates_only_pending_segments(self):
+        """3 segments, segment_03 too short → round 2 only repairs that one."""
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        attach_audio_config(app)
+        music = [sample_music("segment_01"), sample_music("segment_02"), sample_music("segment_03")]
+        app._public_music_manifest(music)
+        # Round 1: segment_01 ok, segment_02 ok, segment_03 too short
+        ok_text = "安静地跟随呼吸，让身体逐渐放松。" * 8  # ~128 chars, within range
+        short_text = "太短"
+        full_result = {
+            "scripts": [
+                {"segment_id": "segment_01", "text": ok_text},
+                {"segment_id": "segment_02", "text": ok_text},
+                {"segment_id": "segment_03", "text": short_text},
+            ],
+        }
+        # Round 2: repair returns fixed segment_03
+        repair_result = {
+            "scripts": [{"segment_id": "segment_03", "text": ok_text}],
+        }
+        app._request_deepseek_json = Mock(side_effect=[full_result, repair_result])
+
+        plan = {"emotion_analysis": {"primary_emotion": "焦虑"}, "emotion_journey": "焦虑 → 平静"}
+        scripts = app.generate_guidance_for_music("紧张", plan, music)
+
+        self.assertEqual(app._request_deepseek_json.call_count, 2)
+        # All 3 segments should be AI-generated
+        self.assertTrue(all(s["guidance_source"] == "ai" for s in scripts))
+        self.assertEqual(len(scripts), 3)
+        # Round 2 payload should only contain segment_03 in repair_segments
+        round2_payload = json.loads(app._request_deepseek_json.call_args_list[1].args[1])
+        self.assertTrue(round2_payload["repair_mode"])
+        self.assertEqual(
+            [s["segment_id"] for s in round2_payload["repair_segments"]],
+            ["segment_03"],
+        )
+
+    def test_already_valid_segments_not_in_repair_payload(self):
+        """Already-passed segments don't appear in repair request."""
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        attach_audio_config(app)
+        music = [sample_music("segment_01"), sample_music("segment_02")]
+        ok = "安静地跟随呼吸，让身体逐渐放松。" * 8
+        full_result = {
+            "scripts": [
+                {"segment_id": "segment_01", "text": ok},
+                {"segment_id": "segment_02", "text": "太短"},
+            ],
+        }
+        repair_result = {"scripts": [{"segment_id": "segment_02", "text": ok}]}
+        app._request_deepseek_json = Mock(side_effect=[full_result, repair_result])
+
+        plan = {"emotion_analysis": {"primary_emotion": "焦虑"}, "emotion_journey": "焦虑 → 平静"}
+        scripts = app.generate_guidance_for_music("紧张", plan, music)
+
+        # segment_01 never re-sent in repair
+        round2_payload = json.loads(app._request_deepseek_json.call_args_list[1].args[1])
+        repair_ids = [s["segment_id"] for s in round2_payload["repair_segments"]]
+        self.assertNotIn("segment_01", repair_ids)
+        self.assertEqual(repair_ids, ["segment_02"])
+
+    def test_truncation_without_pending_retries_full_not_repair(self):
+        """Full generation truncated but no segments classified → retry full, not empty repair."""
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        attach_audio_config(app)
+        music = [sample_music()]
+        # Raise GuidanceTruncatedError before any classification possible
+        app._request_deepseek_json = Mock(side_effect=GuidanceTruncatedError("truncated"))
+        app._fallback_guidance_for_segment = Mock(
+            side_effect=lambda item: {**item, "text": "模板", "guidance_source": "local_fallback"}
+        )
+
+        plan = {"emotion_analysis": {"primary_emotion": "焦虑"}, "emotion_journey": "焦虑 → 平静"}
+        scripts = app.generate_guidance_for_music("紧张", plan, music)
+
+        # All attempts should be full generation (never repair with empty pending)
+        for call_args in app._request_deepseek_json.call_args_list:
+            payload = json.loads(call_args.args[1])
+            self.assertNotIn("repair_mode", payload)
+
+    def test_requests_timeout_converts_to_transport_error(self):
+        """requests.post Timeout → GuidanceTransportError."""
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        app.config = SimpleNamespace(
+            api=SimpleNamespace(
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com/v1",
+                deepseek_model="deepseek-v4-flash",
+                deepseek_timeout_seconds=10,
+            )
+        )
+        with patch("requests.post", side_effect=requests.Timeout("timeout")):
+            with self.assertRaises(GuidanceTransportError):
+                app._request_deepseek_json("sys", "user", 100)
+
+    def test_requests_connection_error_converts_to_transport_error(self):
+        """requests.post ConnectionError → GuidanceTransportError."""
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        app.config = SimpleNamespace(
+            api=SimpleNamespace(
+                deepseek_api_key="test-key",
+                deepseek_base_url="https://api.deepseek.com/v1",
+                deepseek_model="deepseek-v4-flash",
+                deepseek_timeout_seconds=10,
+            )
+        )
+        with patch("requests.post", side_effect=requests.ConnectionError("refused")):
+            with self.assertRaises(GuidanceTransportError):
+                app._request_deepseek_json("sys", "user", 100)
+
+    def test_permanent_http_error_single_attempt_then_fallback(self):
+        """401 → one attempt, then immediate break into fallback."""
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        attach_audio_config(app)
+        music = [sample_music()]
+        # Simulate a 401 response
+        mock_response = Mock()
+        mock_response.status_code = 401
+        mock_response.headers = {}
+        mock_response.raise_for_status.side_effect = requests.HTTPError(response=mock_response)
+        app._request_deepseek_json = Mock(side_effect=GuidanceGenerationError("DeepSeek API 永久错误 HTTP 401"))
+        app._fallback_guidance_for_segment = Mock(
+            side_effect=lambda item: {**item, "text": "模板", "guidance_source": "local_fallback"}
+        )
+
+        plan = {"emotion_analysis": {"primary_emotion": "焦虑"}, "emotion_journey": "焦虑 → 平静"}
+        scripts = app.generate_guidance_for_music("紧张", plan, music)
+
+        # Only 1 attempt — permanent error breaks immediately
+        self.assertEqual(app._request_deepseek_json.call_count, 1)
+        self.assertEqual(scripts[0]["guidance_source"], "local_fallback")
+
+    def test_transport_error_retries_with_backoff(self):
+        """429 retries with exponential backoff, succeeds on attempt 3."""
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        attach_audio_config(app)
+        music = [sample_music()]
+        ok_text = "安静地跟随呼吸，让身体逐渐放松。" * 8
+        # Fails twice with transport error, succeeds on 3rd
+        app._request_deepseek_json = Mock(side_effect=[
+            GuidanceTransportError("HTTP 429"),
+            GuidanceTransportError("HTTP 503"),
+            {"scripts": [{"segment_id": "segment_01", "text": ok_text}]},
+        ])
+
+        plan = {"emotion_analysis": {"primary_emotion": "焦虑"}, "emotion_journey": "焦虑 → 平静"}
+        scripts = app.generate_guidance_for_music("紧张", plan, music)
+
+        self.assertEqual(app._request_deepseek_json.call_count, 3)
+        self.assertEqual(scripts[0]["guidance_source"], "ai")
+
+    def test_only_pending_segments_get_local_fallback(self):
+        """After exhausting repairs, only still-pending segments get fallback."""
+        app = MeditationApp.__new__(MeditationApp)
+        app.logger = Mock()
+        attach_audio_config(app)
+        music = [sample_music("segment_01"), sample_music("segment_02"), sample_music("segment_03")]
+        ok = "安静地跟随呼吸，让身体逐渐放松。" * 8
+        # Round 1: segment_01 ok, 02 and 03 too short
+        full_result = {
+            "scripts": [
+                {"segment_id": "segment_01", "text": ok},
+                {"segment_id": "segment_02", "text": "短"},
+                {"segment_id": "segment_03", "text": "短"},
+            ],
+        }
+        # Rounds 2-5: repair keeps failing for segment_03 only
+        app._request_deepseek_json = Mock(side_effect=[
+            full_result,
+            {"scripts": [{"segment_id": "segment_02", "text": ok}, {"segment_id": "segment_03", "text": "短"}]},
+            {"scripts": [{"segment_id": "segment_03", "text": "短"}]},
+            {"scripts": [{"segment_id": "segment_03", "text": "短"}]},
+            {"scripts": [{"segment_id": "segment_03", "text": "短"}]},
+        ])
+        app._fallback_guidance_for_segment = Mock(
+            side_effect=lambda item: {**item, "text": "模板", "guidance_source": "local_fallback"}
+        )
+
+        plan = {"emotion_analysis": {"primary_emotion": "焦虑"}, "emotion_journey": "焦虑 → 平静"}
+        scripts = app.generate_guidance_for_music("紧张", plan, music)
+
+        # segment_01 and segment_02 should be AI, segment_03 should be fallback
+        sources = {s["segment_id"]: s["guidance_source"] for s in scripts}
+        self.assertEqual(sources["segment_01"], "ai")
+        self.assertEqual(sources["segment_02"], "ai")
+        self.assertEqual(sources["segment_03"], "local_fallback")
 
 
 if __name__ == "__main__":
