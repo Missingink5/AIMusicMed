@@ -154,13 +154,31 @@ class MeditationApp:
             },
             timeout=getattr(self.config.api, "deepseek_timeout_seconds", 180),
         )
-        response.raise_for_status()
-        headers = getattr(response, "headers", {}) or {}
+        # Extract request_id early so error handlers can reference it.
+        resp_headers = getattr(response, "headers", {}) or {}
         request_id = (
-            headers.get("x-request-id") or headers.get("x-ds-trace-id") or "unknown"
-            if hasattr(headers, "get")
+            resp_headers.get("x-request-id") or resp_headers.get("x-ds-trace-id") or "unknown"
+            if hasattr(resp_headers, "get")
             else "unknown"
         )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            status = response.status_code
+            self.logger.warning("DeepSeek HTTP %s: request_id=%s", status, request_id)
+            if status in (400, 401, 402, 422):
+                raise GuidanceGenerationError(
+                    f"DeepSeek API 永久错误 HTTP {status}"
+                ) from exc
+            if status in (429, 500, 502, 503, 504):
+                raise GuidanceTransportError(
+                    f"DeepSeek API 临时错误 HTTP {status}"
+                ) from exc
+            raise GuidanceTransportError(f"DeepSeek API HTTP {status}") from exc
+        except requests.Timeout as exc:
+            raise GuidanceTransportError("DeepSeek API 超时") from exc
+        except requests.ConnectionError as exc:
+            raise GuidanceTransportError("DeepSeek API 连接失败") from exc
         response_body = getattr(response, "content", b"")
         body_bytes = len(response_body) if isinstance(response_body, (bytes, bytearray)) else "unknown"
         try:
@@ -637,8 +655,10 @@ class MeditationApp:
             "guidance_preferences": {"style": style_label, "language_density": density_label},
         }
 
-        valid_segments: list = []
-        invalid_segments: list = []
+        # valid_by_id accumulates AI-validated segments keyed by segment_id.
+        # pending holds the {segment_id, ...} dicts still needing repair.
+        valid_by_id: dict = {}
+        pending: list = []
         last_error = None
 
         # ---- Round 1: full generation ----------------------------------------
@@ -647,23 +667,32 @@ class MeditationApp:
         repair_requested = False
 
         for attempt in range(5):
+            # Permanent HTTP errors (400/401/402/422) are raised as
+            # GuidanceGenerationError directly (not a subclass).  Break
+            # immediately — no point retrying auth or billing failures.
+            if isinstance(last_error, GuidanceGenerationError) and not isinstance(
+                last_error, (GuidanceValidationError, GuidanceTransportError, GuidanceTruncatedError)
+            ):
+                break
+
             try:
                 if not repair_requested:
-                    # Full generation (round 1 only; re‑enter if all segments lost
-                    # due to a structural failure like incorrect script count).
                     system_prompt = self._GUIDANCE_FULL_SYSTEM_PROMPT
                     payload = full_payload
+                    validation_manifest = prompt_manifest
                     mt = max_tokens_full
                 else:
-                    # Repair mode — only send the segments that still need fixing.
-                    repair_data = {**base_request, "repair_mode": True, "repair_segments": invalid_segments}
+                    # Repair mode — only send/validate the segments still failing.
+                    repair_data = {**base_request, "repair_mode": True, "repair_segments": pending}
                     payload = json.dumps(repair_data, ensure_ascii=False)
-                    # Estimate tokens for the subset; a little headroom for the
-                    # repair instructions themselves.
-                    subset_manifest = [
-                        {"target_text_characters": s["target_chars"]} for s in invalid_segments
+                    pending_ids = {s["segment_id"] for s in pending}
+                    validation_manifest = [
+                        item for item in prompt_manifest if item["segment_id"] in pending_ids
                     ]
-                    mt = self._guidance_max_tokens(subset_manifest) + 600
+                    subset_for_tokens = [
+                        {"target_text_characters": s.get("target_chars", 200)} for s in pending
+                    ]
+                    mt = self._guidance_max_tokens(subset_for_tokens) + 600
                     system_prompt = self._GUIDANCE_REPAIR_SYSTEM_PROMPT
 
                 if attempt > 0 and last_error is not None:
@@ -674,67 +703,56 @@ class MeditationApp:
                     system_prompt = system_prompt + " " + err_note
 
                 result = self._request_deepseek_json(system_prompt, payload, mt)
-                new_valid, new_invalid = self._classify_guidance_segments(result, prompt_manifest)
+                new_valid, new_invalid = self._classify_guidance_segments(
+                    result, validation_manifest,
+                )
 
-                # Merge: new_valid replaces segments we were trying to fix.
-                if repair_requested:
-                    fixed_ids = {s["segment_id"] for s in new_valid}
-                    valid_segments = [s for s in valid_segments if s["segment_id"] not in fixed_ids]
-                else:
-                    valid_segments = []
-                valid_segments.extend(new_valid)
-                invalid_segments = new_invalid
+                # Merge: new_valid replaces its segment_ids in valid_by_id.
+                for seg in new_valid:
+                    valid_by_id[seg["segment_id"]] = seg
+                pending = new_invalid
 
-                if not invalid_segments:
-                    order = {item["segment_id"]: idx for idx, item in enumerate(prompt_manifest)}
-                    valid_segments.sort(key=lambda s: order[s["segment_id"]])
-                    print(f"✅ AI已按 {len(valid_segments)} 首具体音乐生成逐段引导词 "
+                if not pending:
+                    ordered = [valid_by_id[item["segment_id"]] for item in prompt_manifest]
+                    print(f"✅ AI已按 {len(ordered)} 首具体音乐生成逐段引导词 "
                           f"(第{attempt + 1}轮)")
-                    return valid_segments
+                    return ordered
 
                 repair_requested = True
                 print(f"🔄 第{attempt + 1}轮: {len(new_valid)} 段通过, "
                       f"{len(new_invalid)} 段待修复 → 下一轮仅修复失败片段")
-                last_error = None  # Clear — transport errors are per‑round.
+                last_error = None
 
             except (GuidanceTruncatedError, GuidanceTransportError) as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次生成失败(transport/truncate): %s", attempt + 1, exc)
-                # Truncation → next attempt uses repair mode with smaller payload.
-                # Transport → retry current mode (may be full or repair).
-                if isinstance(exc, GuidanceTruncatedError):
+                if isinstance(exc, GuidanceTruncatedError) and pending:
+                    # Truncated — next attempt uses repair mode with smaller payload.
                     repair_requested = True
+                    max_tokens_full = min(65536, int(max_tokens_full * 1.5))
+                # else: no segments classified yet → retry full generation.
             except GuidanceValidationError as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次校验失败: %s", attempt + 1, exc)
-                # Structural failure — retry with the same mode (full or repair),
-                # do NOT switch to repair mode because there are no per‑segment
-                # items to repair yet (the validation didn't reach segment level).
+                # Structural failure → retry same mode.
             except Exception as exc:
                 last_error = exc
                 self.logger.warning("引导词第%s次生成失败: %s", attempt + 1, exc)
 
-        # ---- Fallback: fill remaining segments with local templates ----
-        # If structural failures kept us from classifying ANY segment, fall back
-        # all of them.  Otherwise only fill the ones that were classified invalid.
-        if not valid_segments and not invalid_segments:
-            failed_count = len(manifest)
-            invalid_segments = [
-                {"segment_id": item["segment_id"]} for item in manifest
-            ]
-        else:
-            failed_count = len(invalid_segments)
-        self.logger.warning(f"引导词AI修复未完全成功，{len(valid_segments)}段通过，"
+        # ---- Fallback: fill remaining pending segments with local templates ----
+        if not valid_by_id and not pending:
+            # Structural failures prevented ANY classification — fallback all.
+            pending = [{"segment_id": item["segment_id"]} for item in manifest]
+        failed_count = len(pending)
+        self.logger.warning(f"引导词AI修复未完全成功，{len(valid_by_id)}段通过，"
                            f"{failed_count}段使用本地模板: {last_error}")
-        print(f"⚠️ AI引导词部分失败，{len(valid_segments)}段通过，"
+        print(f"⚠️ AI引导词部分失败，{len(valid_by_id)}段通过，"
               f"{failed_count}段使用本地模板")
         manifest_lookup = {item["segment_id"]: item for item in manifest}
-        for seg in invalid_segments:
+        for seg in pending:
             ref = manifest_lookup[seg["segment_id"]]
-            valid_segments.append(self._fallback_guidance_for_segment(ref))
-        order = {item["segment_id"]: idx for idx, item in enumerate(prompt_manifest)}
-        valid_segments.sort(key=lambda s: order[s["segment_id"]])
-        return valid_segments
+            valid_by_id[seg["segment_id"]] = self._fallback_guidance_for_segment(ref)
+        return [valid_by_id[item["segment_id"]] for item in prompt_manifest]
 
     @staticmethod
     def _fallback_guidance_for_segment(item: dict) -> dict:
