@@ -259,7 +259,7 @@ class SopPlanningTests(unittest.TestCase):
         segment = request_payload["music_manifest"][0]
         self.assertEqual(segment["target_speech_seconds"], 50.0)
         self.assertEqual(segment["target_text_characters"], 119)
-        self.assertEqual(app._request_deepseek_json.call_args.args[2], 4096)
+        self.assertEqual(app._request_deepseek_json.call_args.args[2], 65536)
         self.assertEqual(app._request_deepseek_json.call_count, 1)
 
     def test_guidance_budget_scales_from_60_to_400_actual_seconds(self):
@@ -319,7 +319,7 @@ class SopPlanningTests(unittest.TestCase):
             {"target_text_characters": 833},
         ]
 
-        self.assertEqual(MeditationApp._guidance_max_tokens(prompt_manifest), 4548)
+        self.assertEqual(MeditationApp._guidance_max_tokens(prompt_manifest), 65536)
 
     def test_duplicate_ai_segment_ids_cannot_realign_to_other_music(self):
         app = MeditationApp.__new__(MeditationApp)
@@ -712,10 +712,7 @@ class SopPlanningTests(unittest.TestCase):
         for call_args in app._request_deepseek_json.call_args_list:
             payload = json.loads(call_args.args[1])
             self.assertNotIn("repair_mode", payload)
-        # Token budget should grow after truncation
-        first_tokens = app._request_deepseek_json.call_args_list[0].args[2]
-        second_tokens = app._request_deepseek_json.call_args_list[1].args[2]
-        self.assertGreater(second_tokens, first_tokens)
+        # With fixed 65536 max_tokens, all calls use the same budget.
 
     def test_requests_timeout_converts_to_transport_error(self):
         """requests.post Timeout → GuidanceTransportError."""
@@ -859,11 +856,7 @@ class SopPlanningTests(unittest.TestCase):
         scripts = app.generate_guidance_for_music("紧张", plan, music)
 
         self.assertEqual(app._request_deepseek_json.call_count, 3)
-        # repair attempt 1 (truncated) vs repair attempt 2 (succeeded) — tokens grew
-        repair1_tokens = app._request_deepseek_json.call_args_list[1].args[2]
-        repair2_tokens = app._request_deepseek_json.call_args_list[2].args[2]
-        self.assertGreater(repair2_tokens, repair1_tokens)
-        # Both repair payloads contain only segment_02
+        # Both repair payloads contain only segment_02 (token budget is 65536)
         for idx in (1, 2):
             payload = json.loads(app._request_deepseek_json.call_args_list[idx].args[1])
             self.assertEqual(

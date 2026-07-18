@@ -151,7 +151,7 @@ class MeditationApp:
                     "response_format": {"type": "json_object"},
                     # Enable thinking with a moderate budget so the model can
                     # reason about guidance quality without consuming the output window.
-                    "thinking": {"type": "enabled", "budget_tokens": 4096},
+                    "thinking": {"type": "enabled"},
                 },
                 timeout=getattr(self.config.api, "deepseek_timeout_seconds", 180),
             )
@@ -500,9 +500,10 @@ class MeditationApp:
         return max(1, int(speech_seconds * chars_per_second))
 
     @staticmethod
+    @staticmethod
     def _guidance_max_tokens(prompt_manifest: List[Dict]) -> int:
-        total_characters = sum(item["target_text_characters"] for item in prompt_manifest)
-        return min(65536, max(4096, int(total_characters * 1.5) + 800))
+        """No token cap — let DeepSeek use the full 64k ceiling."""
+        return 65536
 
     @staticmethod
     def _classify_guidance_segments(
