@@ -214,7 +214,7 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
       setVoicesError(true);
     } finally {
       voicesLoadingRef.current = false;
-      setVoicesLoading(false);
+      if (mountedRef.current) setVoicesLoading(false);
     }
   }, []);
 
@@ -251,8 +251,10 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
       else                     setPublicTracksError(true);
     } finally {
       loadingRef.current = false;
-      if (scope === "private") setPrivateTracksLoading(false);
-      else                     setPublicTracksLoading(false);
+      if (mountedRef.current) {
+        if (scope === "private") setPrivateTracksLoading(false);
+        else                     setPublicTracksLoading(false);
+      }
     }
 
     // Only merge on success — avoid overwriting availableTracks with
