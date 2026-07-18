@@ -174,7 +174,7 @@ class MeditationApp:
                 h = getattr(exc.response, "headers", {}) or {}
                 req_id = (h.get("x-request-id") or h.get("x-ds-trace-id") or "unknown")
             self.logger.warning("DeepSeek HTTP %s: request_id=%s", status, req_id)
-            if status in (400, 401, 402, 422):
+            if status in (400, 401, 402, 403, 404, 422):
                 raise GuidanceGenerationError(
                     f"DeepSeek API 永久错误 HTTP {status}"
                 ) from exc
@@ -735,6 +735,10 @@ class MeditationApp:
 
                 if not pending:
                     ordered = [valid_by_id[item["segment_id"]] for item in prompt_manifest]
+                    self._last_guidance_stats = {
+                        "attempts": attempt + 1,
+                        "last_error_type": None,
+                    }
                     print(f"✅ AI已按 {len(ordered)} 首具体音乐生成逐段引导词 "
                           f"(第{attempt + 1}轮)")
                     return ordered
@@ -775,7 +779,12 @@ class MeditationApp:
         for seg in pending:
             ref = manifest_lookup[seg["segment_id"]]
             valid_by_id[seg["segment_id"]] = self._fallback_guidance_for_segment(ref)
-        return [valid_by_id[item["segment_id"]] for item in prompt_manifest]
+        result = [valid_by_id[item["segment_id"]] for item in prompt_manifest]
+        self._last_guidance_stats = {
+            "attempts": attempt + 1,
+            "last_error_type": type(last_error).__name__ if last_error else None,
+        }
+        return result
 
     @staticmethod
     def _fallback_guidance_for_segment(item: dict) -> dict:
@@ -839,9 +848,12 @@ class MeditationApp:
                 speech_budget,
                 allow_extension=True,
             )
-            # If AI-generated text was locally adjusted, mark the source accurately.
-            if adjusted_text != text_content and isinstance(segment, dict) and segment.get("guidance_source") == "ai":
-                segment["guidance_source"] = "ai_adjusted_locally"
+            # Keep segment["text"] in sync with what TTS actually speaks.
+            if isinstance(segment, dict):
+                if adjusted_text != text_content:
+                    if segment.get("guidance_source") == "ai":
+                        segment["guidance_source"] = "ai_adjusted_locally"
+                    segment["text"] = adjusted_text
             prepared_segments.append((adjusted_text, music_duration))
 
         if self.config.audio.tts_backend.lower() != "minimax":
@@ -1785,8 +1797,17 @@ class MeditationApp:
                     {script.get("guidance_source", "unknown") for script in script_prompts}
                 ),
                 "guidance_generation": {
+                    "total_segment_count": len(script_prompts),
                     "ai_segment_count": sum(
+                        1 for s in script_prompts
+                        if s.get("guidance_source") in ("ai", "ai_adjusted_locally")
+                    ),
+                    "pure_ai_segment_count": sum(
                         1 for s in script_prompts if s.get("guidance_source") == "ai"
+                    ),
+                    "locally_adjusted_ai_segment_count": sum(
+                        1 for s in script_prompts
+                        if s.get("guidance_source") == "ai_adjusted_locally"
                     ),
                     "fallback_segment_count": sum(
                         1 for s in script_prompts if s.get("guidance_source") == "local_fallback"
@@ -1795,6 +1816,8 @@ class MeditationApp:
                         s["segment_id"] for s in script_prompts
                         if s.get("guidance_source") == "local_fallback"
                     ],
+                    "attempts": getattr(self, "_last_guidance_stats", {}).get("attempts"),
+                    "last_error_type": getattr(self, "_last_guidance_stats", {}).get("last_error_type"),
                 },
                 "guidance_text": "\n\n".join(
                     script.get("text", "").strip() for script in script_prompts
