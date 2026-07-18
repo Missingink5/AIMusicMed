@@ -3,6 +3,21 @@
 import {
   FormEvent,
   useCallback,
+} from "react";
+
+/** Merge two MusicTrack arrays, deduplicating by id (first occurrence wins). */
+export function mergeTracks(
+  priv: MusicTrack[],
+  pub: MusicTrack[],
+): MusicTrack[] {
+  const seen = new Set<string>();
+  const merged: MusicTrack[] = [];
+  for (const t of priv) { if (!seen.has(t.id)) { seen.add(t.id); merged.push(t); } }
+  for (const t of pub)  { if (!seen.has(t.id)) { seen.add(t.id); merged.push(t); } }
+  return merged;
+}
+
+import {
   useEffect,
   useMemo,
   useRef,
@@ -96,14 +111,37 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   const [completionUnread, setCompletionUnread] = useState(false);
   const [track, setTrack] = useState<PlayerTrack>(null);
   const [favoriteWorks, setFavoriteWorks] = useState<WorkSummary[]>([]);
+  // --- Catalog state -----------------------------------------------------------
+  // Refs are the single source-of-truth for guards and locks — they are
+  // synchronously checked and set so double-clicks and rapid effects never
+  // race.  State mirrors them purely to drive the UI.
   const [availableVoices, setAvailableVoices] = useState<VoiceAsset[]>([]);
   const [availableTracks, setAvailableTracks] = useState<MusicTrack[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [voicesLoaded, setVoicesLoaded] = useState(false);
   const [voicesError, setVoicesError] = useState(false);
-  const [tracksLoading, setTracksLoading] = useState(false);
-  const [tracksLoaded, setTracksLoaded] = useState(false);
-  const [tracksError, setTracksError] = useState(false);
+  const [privateTracksLoading, setPrivateTracksLoading] = useState(false);
+  const [privateTracksLoaded, setPrivateTracksLoaded] = useState(false);
+  const [privateTracksError, setPrivateTracksError] = useState(false);
+  const [publicTracksLoading, setPublicTracksLoading] = useState(false);
+  const [publicTracksLoaded, setPublicTracksLoaded] = useState(false);
+  const [publicTracksError, setPublicTracksError] = useState(false);
+
+  const voicesLoadingRef = useRef(false);
+  const voicesLoadedRef   = useRef(false);
+
+  // Per-scope track refs — declared BEFORE callbacks that reference them.
+  // Each scope has its own loading lock so private and public can load
+  // concurrently (e.g. via Promise.all in loadAllTracks).
+  const privateTracks           = useRef<MusicTrack[]>([]);
+  const publicTracks            = useRef<MusicTrack[]>([]);
+  const privateTracksLoadingRef = useRef(false);
+  const publicTracksLoadingRef  = useRef(false);
+  const privateTracksLoadedRef  = useRef(false);
+  const publicTracksLoadedRef   = useRef(false);
+
+  const mountedRef = useRef(true);
+
   const latestPlanRef = useRef<PlanDraft | null>(plan);
   latestPlanRef.current = plan;
   const polling = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -159,48 +197,75 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
     }
   }, [notifyOnComplete]);
 
+  // ---- Catalog loaders (stable callbacks, ref-guarded) ---------------------
   const loadVoices = useCallback(async () => {
-    if (voicesLoading || voicesLoaded) return;
+    if (voicesLoadingRef.current || voicesLoadedRef.current) return;
+    voicesLoadingRef.current = true;
     setVoicesLoading(true);
     setVoicesError(false);
     try {
       const result = await api.listVoices();
-      setAvailableVoices(result.items.filter((voice) => voice.status === "ready"));
+      if (!mountedRef.current) return;
+      setAvailableVoices(result.items.filter((v) => v.status === "ready"));
+      voicesLoadedRef.current = true;
       setVoicesLoaded(true);
     } catch {
+      if (!mountedRef.current) return;
       setVoicesError(true);
     } finally {
+      voicesLoadingRef.current = false;
       setVoicesLoading(false);
     }
-  }, [voicesLoading, voicesLoaded]);
+  }, []);
 
-  const loadTracks = useCallback(async () => {
-    if (tracksLoading || tracksLoaded) return;
-    setTracksLoading(true);
-    setTracksError(false);
+  const loadTrackScope = useCallback(async (scope: "private" | "public") => {
+    // Per-scope guards — each scope has its own loading lock so private
+    // and public can load concurrently via Promise.all.
+    const loadingRef = scope === "private" ? privateTracksLoadingRef : publicTracksLoadingRef;
+    const loadedRef  = scope === "private" ? privateTracksLoadedRef  : publicTracksLoadedRef;
+    if (loadingRef.current || loadedRef.current) return;
+
+    loadingRef.current = true;
+    if (scope === "private") { setPrivateTracksLoading(true); setPrivateTracksError(false); }
+    else                     { setPublicTracksLoading(true);  setPublicTracksError(false); }
+
+    let ok = false;
     try {
-      const [priv, pub] = await Promise.allSettled([
-        api.listMusicTracks("private"),
-        api.listMusicTracks("public"),
-      ]);
-      const privateOk = priv.status === "fulfilled";
-      const publicOk = pub.status === "fulfilled";
-      if (!privateOk && !publicOk) {
-        // Both scopes failed — do NOT mark loaded so retry remains possible.
-        setTracksError(true);
-        return;
+      const result = await api.listMusicTracks(scope);
+      if (!mountedRef.current) return;
+      ok = true;
+      if (scope === "private") {
+        privateTracks.current = result.items;
+        privateTracksLoadedRef.current = true;
+        setPrivateTracksLoaded(true);
+        setPrivateTracksError(false);
+      } else {
+        publicTracks.current = result.items;
+        publicTracksLoadedRef.current = true;
+        setPublicTracksLoaded(true);
+        setPublicTracksError(false);
       }
-      const tracks: MusicTrack[] = [];
-      if (privateOk) tracks.push(...priv.value.items);
-      if (publicOk) tracks.push(...pub.value.items);
-      setAvailableTracks(tracks);
-      setTracksLoaded(true);
     } catch {
-      setTracksError(true);
+      if (!mountedRef.current) return;
+      if (scope === "private") setPrivateTracksError(true);
+      else                     setPublicTracksError(true);
     } finally {
-      setTracksLoading(false);
+      loadingRef.current = false;
+      if (scope === "private") setPrivateTracksLoading(false);
+      else                     setPublicTracksLoading(false);
     }
-  }, [tracksLoading, tracksLoaded]);
+
+    // Only merge on success — avoid overwriting availableTracks with
+    // stale/empty data after a failure.
+    if (!mountedRef.current) return;
+    if (ok) {
+      setAvailableTracks(mergeTracks(privateTracks.current, publicTracks.current));
+    }
+  }, []);
+
+  const loadAllTracks = useCallback(async () => {
+    await Promise.all([loadTrackScope("private"), loadTrackScope("public")]);
+  }, [loadTrackScope]);
 
   const pollJob = useCallback(
     (id: string, ownerConversationId: string) => {
@@ -353,14 +418,22 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
     };
   }, [initialView, loadConversation, refreshHistory]);
 
-  // Catalog preload runs in parallel after the user is authenticated.
+  // Catalog preload — fires once when the user is authenticated.
+  // The load callbacks are stable (ref-guarded, no state deps).
   useEffect(() => {
     if (!user) return;
     const preload = async () => {
-      await Promise.all([loadVoices(), loadTracks()]);
+      await Promise.all([loadVoices(), loadAllTracks()]);
     };
     void preload();
-  }, [user, loadVoices, loadTracks]);
+  }, [user, loadVoices, loadAllTracks]);
+
+  // Mount/unmount guard — explicitly set true on mount so React 18
+  // strict-mode simulated remount resets it after cleanup sets false.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     const resumePolling = () => {
@@ -823,11 +896,14 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
             voicesLoading={voicesLoading}
             voicesLoaded={voicesLoaded}
             voicesError={voicesError}
-            tracksLoading={tracksLoading}
-            tracksLoaded={tracksLoaded}
-            tracksError={tracksError}
+            privateTracksLoading={privateTracksLoading}
+            privateTracksLoaded={privateTracksLoaded}
+            privateTracksError={privateTracksError}
+            publicTracksLoading={publicTracksLoading}
+            publicTracksLoaded={publicTracksLoaded}
+            publicTracksError={publicTracksError}
             onLoadVoices={loadVoices}
-            onLoadTracks={loadTracks}
+            onLoadTrackScope={loadTrackScope}
           />
         )}
         {view === "api" && <ApiSettings />}
@@ -1092,11 +1168,14 @@ function ChatView({
   voicesLoading,
   voicesLoaded,
   voicesError,
-  tracksLoading,
-  tracksLoaded,
-  tracksError,
+  privateTracksLoading,
+  privateTracksLoaded,
+  privateTracksError,
+  publicTracksLoading,
+  publicTracksLoaded,
+  publicTracksError,
   onLoadVoices,
-  onLoadTracks,
+  onLoadTrackScope,
 }: {
   messages: Message[];
   draft: string;
@@ -1130,11 +1209,14 @@ function ChatView({
   voicesLoading: boolean;
   voicesLoaded: boolean;
   voicesError: boolean;
-  tracksLoading: boolean;
-  tracksLoaded: boolean;
-  tracksError: boolean;
+  privateTracksLoading: boolean;
+  privateTracksLoaded: boolean;
+  privateTracksError: boolean;
+  publicTracksLoading: boolean;
+  publicTracksLoaded: boolean;
+  publicTracksError: boolean;
   onLoadVoices: () => Promise<void>;
-  onLoadTracks: () => Promise<void>;
+  onLoadTrackScope: (scope: "private" | "public") => Promise<void>;
 }) {
   const hasMessages = messages.length > 0;
   return (
@@ -1218,11 +1300,14 @@ function ChatView({
                   voicesLoading={voicesLoading}
                   voicesLoaded={voicesLoaded}
                   voicesError={voicesError}
-                  tracksLoading={tracksLoading}
-                  tracksLoaded={tracksLoaded}
-                  tracksError={tracksError}
+                  privateTracksLoading={privateTracksLoading}
+                  privateTracksLoaded={privateTracksLoaded}
+                  privateTracksError={privateTracksError}
+                  publicTracksLoading={publicTracksLoading}
+                  publicTracksLoaded={publicTracksLoaded}
+                  publicTracksError={publicTracksError}
                   onLoadVoices={onLoadVoices}
-                  onLoadTracks={onLoadTracks}
+                  onLoadTrackScope={onLoadTrackScope}
                 />
               )}
               {jobState === "running" && (
@@ -1305,11 +1390,14 @@ function PlanCard({
   voicesLoading,
   voicesLoaded,
   voicesError,
-  tracksLoading,
-  tracksLoaded,
-  tracksError,
+  privateTracksLoading,
+  privateTracksLoaded,
+  privateTracksError,
+  publicTracksLoading,
+  publicTracksLoaded,
+  publicTracksError,
   onLoadVoices,
-  onLoadTracks,
+  onLoadTrackScope,
 }: {
   plan: PlanDraft;
   setPlan: React.Dispatch<React.SetStateAction<PlanDraft>>;
@@ -1320,11 +1408,14 @@ function PlanCard({
   voicesLoading: boolean;
   voicesLoaded: boolean;
   voicesError: boolean;
-  tracksLoading: boolean;
-  tracksLoaded: boolean;
-  tracksError: boolean;
+  privateTracksLoading: boolean;
+  privateTracksLoaded: boolean;
+  privateTracksError: boolean;
+  publicTracksLoading: boolean;
+  publicTracksLoaded: boolean;
+  publicTracksError: boolean;
   onLoadVoices: () => Promise<void>;
-  onLoadTracks: () => Promise<void>;
+  onLoadTrackScope: (scope: "private" | "public") => Promise<void>;
 }) {
   const availableVoices = voiceCache;
   const availableTracks = trackCache;
@@ -1414,12 +1505,22 @@ function PlanCard({
                 </option>
               ))}
             </select>
-            {tracksLoading && !tracksLoaded && (
-              <small className="loading-hint">正在加载曲库…</small>
+            {privateTracksLoading && !privateTracksLoaded && (
+              <small className="loading-hint">正在加载私人曲库…</small>
             )}
-            {!tracksLoading && tracksError && !tracksLoaded && (
-              <button type="button" className="retry-button" onClick={() => void onLoadTracks()}>
-                曲库加载失败，点击重试
+            {!privateTracksLoading && privateTracksError && !privateTracksLoaded && (
+              <button type="button" className="retry-button"
+                onClick={() => void onLoadTrackScope("private")}>
+                私人曲库加载失败，点击重试
+              </button>
+            )}
+            {publicTracksLoading && !publicTracksLoaded && (
+              <small className="loading-hint">正在加载公共曲库…</small>
+            )}
+            {!publicTracksLoading && publicTracksError && !publicTracksLoaded && (
+              <button type="button" className="retry-button"
+                onClick={() => void onLoadTrackScope("public")}>
+                公共曲库加载失败，点击重试
               </button>
             )}
           </label>
