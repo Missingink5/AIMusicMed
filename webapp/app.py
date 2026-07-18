@@ -1768,6 +1768,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         media = {"wav": "audio/wav", "mp3": "audio/mpeg", "txt": "text/plain; charset=utf-8"}[format]
         return FileResponse(path, media_type=media, filename=f"{work['title']}.{format}")
 
+    @app.get("/works/{work_id}/audio")
+    def stream_audio(work_id: str, user=Depends(current_user)):
+        """Stream audio with Range support for in-browser playback."""
+        with db.connection() as conn:
+            work = conn.execute("SELECT * FROM works WHERE id=?", (work_id,)).fetchone()
+        if not work or work["user_id"] != user["id"] or work["deleted_at"] is not None:
+            raise ApiError("work_not_found", "作品不存在", 404)
+        if not work["is_favorite"] and work["expires_at"] is not None and work["expires_at"] <= _now():
+            raise ApiError("audio_expired", "音频已过期或不存在", 410)
+        path = safe_storage_path(settings.storage_root, work["mp3_relpath"])
+        if not path.is_file():
+            raise ApiError("audio_expired", "音频已过期或不存在", 410)
+        # FileResponse without filename → inline disposition + native Range support.
+        from starlette.responses import FileResponse as StarletteFR
+        return StarletteFR(
+            path,
+            media_type="audio/mpeg",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
+
     @app.post("/works/{work_id}/favorite")
     def favorite_work(work_id: str, user=Depends(current_user)):
         return set_favorite(work_id, user["id"], True)

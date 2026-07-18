@@ -11,14 +11,23 @@
 	}
 
 	handle_path /api/v1/* {
-		reverse_proxy api:8000
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
 	}
 
 	handle {
 		reverse_proxy web:3000
 	}
 
-	# API responses must never be stored by shared or private caches.
+	# Audio streaming — no compression, allow browser caching for Range requests.
+	@audioStream {
+		path /api/v1/works/*/audio
+	}
+	header @audioStream -Content-Encoding
+	header @audioStream Cache-Control "private, max-age=3600"
+
+	# All other API responses must never be cached.
 	@apiResponses {
 		path /api/*
 	}

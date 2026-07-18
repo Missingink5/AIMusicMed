@@ -1915,6 +1915,7 @@ function ActiveGlobalPlayer({
   const [seeking, setSeeking] = useState(false);
   const [seekTime, setSeekTime] = useState(0);
   const [error, setError] = useState("");
+  const [buffering, setBuffering] = useState(false);
 
   useEffect(() => {
     let lastWritten = -1;
@@ -1990,8 +1991,8 @@ function ActiveGlobalPlayer({
     <section className={`global-player ${expanded ? "expanded" : ""}`}>
       <audio
         ref={audioRef}
-        src={api.downloadUrl(track.workId, "mp3")}
-        preload="metadata"
+        src={api.audioUrl(track.workId)}
+        preload="auto"
         muted={muted}
         onLoadedMetadata={(event) => {
           const media = event.currentTarget;
@@ -2008,7 +2009,11 @@ function ActiveGlobalPlayer({
           setCurrentTime(saved);
           setSeekTime(saved);
         }}
-        onPlay={() => setPlaying(true)}
+        onWaiting={() => setBuffering(true)}
+        onStalled={() => setBuffering(true)}
+        onCanPlay={() => setBuffering(false)}
+        onPlaying={() => setBuffering(false)}
+        onPlay={() => { setPlaying(true); setBuffering(false); }}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
         onTimeUpdate={(event) => {
@@ -2030,7 +2035,7 @@ function ActiveGlobalPlayer({
         <span className="global-cover">♫</span>
         <span>
           <strong>{track.title}</strong>
-          <small>{playing ? "正在播放" : "已暂停"}</small>
+          <small>{buffering ? "正在缓冲…" : playing ? "正在播放" : "已暂停"}</small>
         </span>
       </div>
       <div className="global-controls">

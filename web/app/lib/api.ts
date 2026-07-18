@@ -514,6 +514,8 @@ export const api = {
     }),
   downloadUrl: (workId: string, format: "mp3" | "wav" | "txt") =>
     `${API_BASE}/works/${workId}/download?format=${format}`,
+  audioUrl: (workId: string) =>
+    `${API_BASE}/works/${encodeURIComponent(workId)}/audio`,
   adminUsers: () => request<{ items: AdminUser[] }>("/admin/users"),
   inviteUser: (email: string) =>
     request<{ invited: true; status: "pending"; expires_in: number }>(
