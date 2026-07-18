@@ -43,6 +43,25 @@ class MeditationAppError(Exception):
     pass
 
 
+class GuidanceGenerationError(MeditationAppError):
+    """引导词生成失败 — 可携带失败片段信息用于增量修复"""
+    def __init__(self, message: str, invalid_segments: list | None = None):
+        super().__init__(message)
+        self.invalid_segments = invalid_segments or []
+
+
+class GuidanceTransportError(GuidanceGenerationError):
+    """网络 / 超时 / HTTP 错误 — 可重试"""
+
+
+class GuidanceTruncatedError(GuidanceGenerationError):
+    """DeepSeek finish_reason='length' — JSON 可能被截断，下一轮缩小 payload"""
+
+
+class GuidanceValidationError(GuidanceGenerationError):
+    """校验失败，但已有部分合格片段 — invalid_segments 列出需修复的片段"""
+
+
 class MeditationApp:
     def __init__(
         self,
@@ -161,6 +180,16 @@ class MeditationApp:
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise ValueError("DeepSeek HTTP响应缺少有效的choices[0]")
         choice = choices[0]
+        # Detect output-length truncation before any further parsing.
+        finish_reason = choice.get("finish_reason", "unknown")
+        if finish_reason == "length":
+            self.logger.warning(
+                "DeepSeek output truncated (finish_reason=length): request_id=%s",
+                request_id,
+            )
+            raise GuidanceTruncatedError(
+                f"DeepSeek 输出达到 token 上限 (finish_reason=length)，JSON 可能被截断，request_id={request_id}"
+            )
         message = choice.get("message")
         if not isinstance(message, dict):
             raise ValueError("DeepSeek HTTP响应缺少有效的message")
@@ -449,52 +478,130 @@ class MeditationApp:
         return min(65536, max(4096, int(total_characters * 1.5) + 800))
 
     @staticmethod
-    def _validate_guidance_result(result: Dict, prompt_manifest: List[Dict]) -> List[Dict]:
+    def _classify_guidance_segments(
+        result: dict,
+        prompt_manifest: list,
+    ) -> tuple:
+        """逐段分类：返回 (valid_segments, invalid_segments)。
+
+        valid 段从 reference 补回 music_ref / grounding_fingerprint 等可信字段
+        （不再要求模型原样抄写哈希值）。
+        invalid 段包含 segment_id、failure_reason、previous_text（如有）。
+        """
         if not isinstance(result, dict):
-            raise ValueError(
+            raise GuidanceValidationError(
                 f"AI引导词JSON顶层必须是对象，实际为{type(result).__name__}"
             )
         scripts = result.get("scripts")
-        if not isinstance(scripts, list) or len(scripts) != len(prompt_manifest):
-            raise ValueError("AI引导词数量与音乐片段数量不一致")
+        if not isinstance(scripts, list):
+            raise GuidanceValidationError("AI引导词缺少有效的scripts数组")
         expected = {item["segment_id"]: item for item in prompt_manifest}
+
+        # Quick structural check before segment-level classification.
         if not all(isinstance(script, dict) for script in scripts):
-            raise ValueError("AI引导词scripts中的每一项都必须是对象")
+            raise GuidanceValidationError("AI引导词scripts中的每一项都必须是对象")
         returned_ids = [script.get("segment_id") for script in scripts]
         if len(set(returned_ids)) != len(returned_ids) or set(returned_ids) != set(expected):
-            raise ValueError("AI引导词片段ID重复、缺失或多余")
-        validated = []
+            raise GuidanceValidationError(
+                f"AI引导词片段ID不匹配: 期望{set(expected)}，实际{set(returned_ids)}"
+            )
+
+        valid_segments: list = []
+        invalid_segments: list = []
+
         for script in scripts:
             segment_id = script.get("segment_id")
             reference = expected.get(segment_id)
+            # Guarded by set-equality check above; kept for safety.
             if reference is None:
-                raise ValueError(f"AI返回未知片段: {segment_id}")
-            if script.get("music_ref") != reference["music_ref"]:
-                raise ValueError(f"AI音乐引用不匹配: {segment_id}")
-            if script.get("grounding_fingerprint") != reference["grounding_fingerprint"]:
-                raise ValueError(f"AI音乐依据指纹不匹配: {segment_id}")
+                raise GuidanceValidationError(f"AI返回未知片段: {segment_id}")
+
             text_value = str(script.get("text", "")).strip()
+            target_chars = reference["target_text_characters"]
+
             if not text_value:
-                raise ValueError(f"AI返回空引导词: {segment_id}")
-            minimum_characters = max(1, int(reference["target_text_characters"] * 0.85))
-            if len(text_value) < minimum_characters:
-                raise ValueError(
-                    f"AI引导词过短: {segment_id}，{len(text_value)} < {minimum_characters}字"
-                )
-            validated.append({**reference, "text": text_value, "guidance_source": "ai"})
+                invalid_segments.append({
+                    "segment_id": segment_id,
+                    "failure_reason": "segment_empty",
+                    "detail": "引导词文本为空",
+                    "target_chars": target_chars,
+                })
+                continue
+
+            text_len = len(text_value)
+            min_loose = max(1, int(target_chars * 0.60))
+            min_strict = max(1, int(target_chars * 0.85))
+            max_chars = max(1, int(target_chars * 1.10))
+
+            if text_len < min_loose:
+                # Too short — needs full regeneration
+                invalid_segments.append({
+                    "segment_id": segment_id,
+                    "failure_reason": "segment_too_short",
+                    "detail": f"文本长度 {text_len} 字，最低要求 {min_loose} 字（<60%，需重新生成）",
+                    "target_chars": target_chars,
+                    "previous_text": text_value,
+                })
+            elif text_len < min_strict:
+                # Borderline — ask AI to expand existing text
+                invalid_segments.append({
+                    "segment_id": segment_id,
+                    "failure_reason": "segment_too_short",
+                    "detail": f"文本长度 {text_len} 字，最低要求 {min_strict} 字（60-85%区间，请扩写）",
+                    "target_chars": target_chars,
+                    "previous_text": text_value,
+                })
+            elif text_len > max_chars:
+                # Too long — ask AI to compress
+                invalid_segments.append({
+                    "segment_id": segment_id,
+                    "failure_reason": "segment_too_long",
+                    "detail": f"文本长度 {text_len} 字，上限 {max_chars} 字（>110%，请压缩）",
+                    "target_chars": target_chars,
+                    "previous_text": text_value,
+                })
+            else:
+                # Pass — inject trusted fields from reference
+                valid_segments.append({**reference, "text": text_value, "guidance_source": "ai"})
+
         order = {item["segment_id"]: index for index, item in enumerate(prompt_manifest)}
-        validated.sort(key=lambda item: order[item["segment_id"]])
-        return validated
+        valid_segments.sort(key=lambda item: order[item["segment_id"]])
+        return valid_segments, invalid_segments
+
+    # ------------------------------------------------------------------
+    # Guidance generation — incremental repair loop
+    # ------------------------------------------------------------------
+
+    _GUIDANCE_FULL_SYSTEM_PROMPT = (
+        "你是专业冥想引导师。根据每段已经选定的音乐情绪、曲名标签、"
+        "声学特征、阶段目标和实际时长，逐段生成中文引导词。"
+        "不得虚构音乐中未提供的乐器或事件。"
+        "只返回JSON对象，不要返回代码围栏，顶层不得直接返回数组。"
+        "JSON对象必须包含scripts数组，每项只需segment_id和text两个字段。"
+        "每段text应达到target_text_characters的90%-100%，朗读时长接近target_speech_seconds，"
+        "严格遵循guidance_preferences中的引导方式与语言密度；减少语言时不要用重复句填满音乐。"
+        "使用自然完整的冥想指导语扩展篇幅，不得机械重复句子。"
+    )
+
+    _GUIDANCE_REPAIR_SYSTEM_PROMPT = (
+        "你是专业冥想引导师。你正在修复之前不合格的引导词片段。"
+        "请为以下每个失败片段生成新的text。"
+        "只返回JSON对象，不要返回代码围栏，顶层不得直接返回数组。"
+        "JSON对象必须包含scripts数组，每项只需segment_id和text两个字段。"
+        "根据每项的failure_reason调整文本：segment_too_short请扩写至target_chars附近（可参考previous_text），"
+        "segment_too_long请压缩至上限以内，segment_empty请全新生成。"
+        "严格遵循guidance_preferences中的引导方式与语言密度。"
+    )
 
     def generate_guidance_for_music(
         self,
         user_input: str,
-        plan: Dict,
-        music_info: List[Dict],
+        plan: dict,
+        music_info: list,
         guidance_style: str = "auto",
         language_density: str = "balanced",
-    ) -> List[Dict]:
-        """Generate one grounded guidance segment after the concrete music is selected."""
+    ) -> list:
+        """逐段生成引导词，仅修复失败片段，最多 5 轮。"""
         guidance_style_labels = {
             "auto": "根据情绪与音乐自动选择",
             "gentle": "温柔陪伴",
@@ -506,72 +613,132 @@ class MeditationApp:
         style_label = guidance_style_labels.get(guidance_style, guidance_style_labels["auto"])
         density_label = "减少语言，留更多纯音乐空间" if language_density == "less_language" else "均衡引导"
         manifest = self._public_music_manifest(music_info)
+
+        # Build prompt_manifest once — used for full generation and as reference.
         prompt_manifest = []
         for item in manifest:
             target_speech_seconds = self._guidance_speech_budget(
-                item["render_duration_seconds"],
-                language_density,
+                item["render_duration_seconds"], language_density,
             )
             target_characters = self._guidance_target_characters(target_speech_seconds)
-            prompt_manifest.append(
-                {
-                    **item,
-                    "speech_start_seconds": self.config.audio.speech_start_delay_seconds,
-                    "target_speech_seconds": round(target_speech_seconds, 1),
-                    "target_text_characters": target_characters,
-                    "max_speech_seconds": round(target_speech_seconds, 1),
-                    "max_text_characters": target_characters,
-                }
-            )
-        request_payload = json.dumps(
-            {
-                "user_context": user_input,
-                "emotion_analysis": plan["emotion_analysis"],
-                "emotion_journey": plan["emotion_journey"],
-                "guidance_preferences": {
-                    "style": style_label,
-                    "language_density": density_label,
-                },
-                "music_manifest": prompt_manifest,
-            },
-            ensure_ascii=False,
-        )
-        max_tokens = self._guidance_max_tokens(prompt_manifest)
+            prompt_manifest.append({
+                **item,
+                "speech_start_seconds": self.config.audio.speech_start_delay_seconds,
+                "target_speech_seconds": round(target_speech_seconds, 1),
+                "target_text_characters": target_characters,
+                "max_speech_seconds": round(target_speech_seconds, 1),
+                "max_text_characters": target_characters,
+            })
+
+        base_request = {
+            "user_context": user_input,
+            "emotion_analysis": plan["emotion_analysis"],
+            "emotion_journey": plan["emotion_journey"],
+            "guidance_preferences": {"style": style_label, "language_density": density_label},
+        }
+
+        valid_segments: list = []
+        invalid_segments: list = []
         last_error = None
-        base_system_prompt = (
-            "你是专业冥想引导师。根据每段已经选定的音乐情绪、曲名标签、声学特征、阶段目标和实际时长，"
-            "逐段生成中文引导词。不得虚构音乐中未提供的乐器或事件。"
-            "只返回JSON对象，不要返回代码围栏，顶层不得直接返回数组。JSON对象必须包含scripts数组；"
-            "每项必须原样返回segment_id、music_ref、grounding_fingerprint和text。"
-            "每段text应达到target_text_characters的90%-100%，朗读时长接近target_speech_seconds，"
-            "严格遵循guidance_preferences中的引导方式与语言密度；减少语言时不要用重复句填满音乐。"
-            "使用自然完整的冥想指导语扩展篇幅，不得机械重复句子。"
-        )
-        for attempt in range(2):
+
+        # ---- Round 1: full generation ----------------------------------------
+        full_payload = json.dumps({**base_request, "music_manifest": prompt_manifest}, ensure_ascii=False)
+        max_tokens_full = self._guidance_max_tokens(prompt_manifest)
+        repair_requested = False
+
+        for attempt in range(5):
             try:
-                system_prompt = base_system_prompt
-                if last_error is not None:
-                    system_prompt += (
-                        "上一次响应不符合JSON结构要求。请纠正后重新生成；"
-                        f"错误类型为{type(last_error).__name__}，原因是{str(last_error)[:200]}。"
+                if not repair_requested:
+                    # Full generation (round 1 only; re‑enter if all segments lost
+                    # due to a structural failure like incorrect script count).
+                    system_prompt = self._GUIDANCE_FULL_SYSTEM_PROMPT
+                    payload = full_payload
+                    mt = max_tokens_full
+                else:
+                    # Repair mode — only send the segments that still need fixing.
+                    repair_data = {**base_request, "repair_mode": True, "repair_segments": invalid_segments}
+                    payload = json.dumps(repair_data, ensure_ascii=False)
+                    # Estimate tokens for the subset; a little headroom for the
+                    # repair instructions themselves.
+                    subset_manifest = [
+                        {"target_text_characters": s["target_chars"]} for s in invalid_segments
+                    ]
+                    mt = self._guidance_max_tokens(subset_manifest) + 600
+                    system_prompt = self._GUIDANCE_REPAIR_SYSTEM_PROMPT
+
+                if attempt > 0 and last_error is not None:
+                    err_note = (
+                        f"上一次生成失败，错误类型：{type(last_error).__name__}，"
+                        f"原因：{str(last_error)[:200]}。请纠正后重试。"
                     )
-                result = self._request_deepseek_json(
-                    system_prompt,
-                    request_payload,
-                    max_tokens,
-                )
-                validated = self._validate_guidance_result(result, prompt_manifest)
-                print(f"✅ AI已按 {len(validated)} 首具体音乐生成逐段引导词")
-                return validated
+                    system_prompt = system_prompt + " " + err_note
+
+                result = self._request_deepseek_json(system_prompt, payload, mt)
+                new_valid, new_invalid = self._classify_guidance_segments(result, prompt_manifest)
+
+                # Merge: new_valid replaces segments we were trying to fix.
+                if repair_requested:
+                    fixed_ids = {s["segment_id"] for s in new_valid}
+                    valid_segments = [s for s in valid_segments if s["segment_id"] not in fixed_ids]
+                else:
+                    valid_segments = []
+                valid_segments.extend(new_valid)
+                invalid_segments = new_invalid
+
+                if not invalid_segments:
+                    order = {item["segment_id"]: idx for idx, item in enumerate(prompt_manifest)}
+                    valid_segments.sort(key=lambda s: order[s["segment_id"]])
+                    print(f"✅ AI已按 {len(valid_segments)} 首具体音乐生成逐段引导词 "
+                          f"(第{attempt + 1}轮)")
+                    return valid_segments
+
+                repair_requested = True
+                print(f"🔄 第{attempt + 1}轮: {len(new_valid)} 段通过, "
+                      f"{len(new_invalid)} 段待修复 → 下一轮仅修复失败片段")
+                last_error = None  # Clear — transport errors are per‑round.
+
+            except (GuidanceTruncatedError, GuidanceTransportError) as exc:
+                last_error = exc
+                self.logger.warning("引导词第%s次生成失败(transport/truncate): %s", attempt + 1, exc)
+                # Truncation → next attempt uses repair mode with smaller payload.
+                # Transport → retry current mode (may be full or repair).
+                if isinstance(exc, GuidanceTruncatedError):
+                    repair_requested = True
+            except GuidanceValidationError as exc:
+                last_error = exc
+                self.logger.warning("引导词第%s次校验失败: %s", attempt + 1, exc)
+                # Structural failure — retry with the same mode (full or repair),
+                # do NOT switch to repair mode because there are no per‑segment
+                # items to repair yet (the validation didn't reach segment level).
             except Exception as exc:
                 last_error = exc
-                self.logger.warning("音乐对齐引导词第%s次生成失败: %s", attempt + 1, exc)
-        self.logger.warning(f"音乐对齐引导词AI生成失败，使用本地对齐模板: {last_error}")
-        print(f"⚠️ AI引导词生成不可用，使用音乐对齐本地模板: {last_error}")
-        return self._generate_grounded_fallback_guidance(manifest)
+                self.logger.warning("引导词第%s次生成失败: %s", attempt + 1, exc)
+
+        # ---- Fallback: fill remaining segments with local templates ----
+        # If structural failures kept us from classifying ANY segment, fall back
+        # all of them.  Otherwise only fill the ones that were classified invalid.
+        if not valid_segments and not invalid_segments:
+            failed_count = len(manifest)
+            invalid_segments = [
+                {"segment_id": item["segment_id"]} for item in manifest
+            ]
+        else:
+            failed_count = len(invalid_segments)
+        self.logger.warning(f"引导词AI修复未完全成功，{len(valid_segments)}段通过，"
+                           f"{failed_count}段使用本地模板: {last_error}")
+        print(f"⚠️ AI引导词部分失败，{len(valid_segments)}段通过，"
+              f"{failed_count}段使用本地模板")
+        manifest_lookup = {item["segment_id"]: item for item in manifest}
+        for seg in invalid_segments:
+            ref = manifest_lookup[seg["segment_id"]]
+            valid_segments.append(self._fallback_guidance_for_segment(ref))
+        order = {item["segment_id"]: idx for idx, item in enumerate(prompt_manifest)}
+        valid_segments.sort(key=lambda s: order[s["segment_id"]])
+        return valid_segments
 
     @staticmethod
-    def _generate_grounded_fallback_guidance(manifest: List[Dict]) -> List[Dict]:
+    def _fallback_guidance_for_segment(item: dict) -> dict:
+        """为单个片段生成本地模板引导词（仅用于最终兜底）。"""
         emotion_openings = {
             "焦虑": "允许此刻的紧张被看见，把注意力温柔地带回呼吸",
             "忧郁": "不必急着推开低落，让自己被稳稳地承接",
@@ -581,19 +748,18 @@ class MeditationApp:
             "自豪": "认可已经付出的努力，让稳定的力量留在心中",
             "友爱": "把温和与善意带向自己，也带向与他人的连接",
         }
-        guidance = []
-        for item in manifest:
-            features = item["music_features"]
-            text_value = (
-                f"{emotion_openings[item['emotion']]}。"
-                f"跟随这段{features['tempo_label']}、{features['energy_label']}、"
-                f"音色{features['brightness_label']}、"
-                f"能量{features.get('energy_trajectory', '整体平稳')}的音乐，"
-                f"{item['stage_goal']}。"
-                f"在{item['transition_role']}的过程中，让每一次呼吸自然衔接下一刻。"
-            )
-            guidance.append({**item, "text": text_value, "guidance_source": "local_fallback"})
-        return guidance
+        features = item["music_features"]
+        emotion = item.get("emotion", "平静")
+        opening = emotion_openings.get(emotion, emotion_openings["平静"])
+        text_value = (
+            f"{opening}。"
+            f"跟随这段{features['tempo_label']}、{features['energy_label']}、"
+            f"音色{features['brightness_label']}、"
+            f"能量{features.get('energy_trajectory', '整体平稳')}的音乐，"
+            f"{item['stage_goal']}。"
+            f"在{item['transition_role']}的过程中，让每一次呼吸自然衔接下一刻。"
+        )
+        return {**item, "text": text_value, "guidance_source": "local_fallback"}
 
     async def generate_speech_adaptive(
         self,

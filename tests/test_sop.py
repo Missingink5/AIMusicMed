@@ -336,9 +336,11 @@ class SopPlanningTests(unittest.TestCase):
 
         self.assertTrue(all(item["guidance_source"] == "local_fallback" for item in scripts))
         self.assertEqual([item["segment_id"] for item in scripts], ["segment_01", "segment_02"])
-        self.assertEqual(app._request_deepseek_json.call_count, 2)
+        # 5 rounds of full generation (GuidanceValidationError does NOT switch to
+        # repair mode), all fail with duplicate IDs, then fallback to template.
+        self.assertEqual(app._request_deepseek_json.call_count, 5)
         retry_system_prompt = app._request_deepseek_json.call_args_list[1].args[0]
-        self.assertIn("上一次响应不符合JSON结构要求", retry_system_prompt)
+        self.assertIn("上一次生成失败", retry_system_prompt)
 
     def test_guidance_retries_top_level_list_then_accepts_valid_object(self):
         app = MeditationApp.__new__(MeditationApp)
