@@ -1222,7 +1222,7 @@ export function AdminView() {
     )
       return;
     try {
-      await api.updateUserStatus(user.id, disabling ? "disabled" : "active");
+      await api.updateUserStatus(user.id, disabling ? "disabled" : "active", "");
       setStatus(disabling ? "用户已停用，历史内容仍保留。" : "用户已重新启用。");
       await loadUsers();
     } catch (reason) {
@@ -1241,7 +1241,7 @@ export function AdminView() {
       return;
     }
     try {
-      await api.updateUserQuota(user.id, limit);
+      await api.updateUserQuota(user.id, limit, "");
       setStatus("额度已更新。");
       await loadUsers();
     } catch (reason) {

@@ -159,6 +159,7 @@ export type SiteNotification = {
 export type AdminOpsSnapshot = {
   voices: Array<Record<string, unknown>>;
   tracks: Array<Record<string, unknown>>;
+  music: Array<Record<string, unknown>>; // alias for tracks tab
   jobs: Array<Record<string, unknown>>;
   works: Array<Record<string, unknown>>;
   stats: Array<Record<string, unknown>>;
@@ -424,6 +425,7 @@ export const api = {
     return {
       voices: voices.items,
       tracks: tracks.items,
+      music: tracks.items,
       jobs: jobs.items,
       works: works.items,
       stats: stats.items,

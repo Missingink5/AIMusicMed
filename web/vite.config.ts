@@ -52,7 +52,7 @@ export default defineConfig(async () => {
         "/api/v1": {
           target: "http://127.0.0.1:8000",
           changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api\/v1/, ""),
+          rewrite: (path: string) => path.replace(/^\/api\/v1/, ""),
         },
       },
     },

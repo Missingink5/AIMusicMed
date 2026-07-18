@@ -100,7 +100,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   const [availableTracks, setAvailableTracks] = useState<MusicTrack[]>([]);
   const [voicesLoaded, setVoicesLoaded] = useState(false);
   const [tracksLoaded, setTracksLoaded] = useState(false);
-  const [catalogLoading, setCatalogLoading] = useState(false);
+  const voicesLoadingRef = useRef(false);
+  const tracksLoadingRef = useRef(false);
   const latestPlanRef = useRef<PlanDraft | null>(plan);
   latestPlanRef.current = plan;
   const polling = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -156,26 +157,36 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
     }
   }, [notifyOnComplete]);
 
-  const reloadCaches = useCallback(async () => {
-    if (catalogLoading) return;
-    setCatalogLoading(true);
-    const results = await Promise.allSettled([
-      api.listVoices(),
-      api.listMusicTracks("private"),
-      api.listMusicTracks("public"),
-    ]);
-    const [v, priv, pub] = results;
-    if (v.status === "fulfilled") {
-      setAvailableVoices(v.value.items.filter((voice) => voice.status === "ready"));
+  const loadVoices = useCallback(async () => {
+    if (voicesLoadingRef.current || voicesLoaded) return;
+    voicesLoadingRef.current = true;
+    try {
+      const result = await api.listVoices();
+      setAvailableVoices(result.items.filter((voice) => voice.status === "ready"));
+      setVoicesLoaded(true);
+    } catch {
+      // Keep voicesLoaded=false so retry is possible.
+    } finally {
+      voicesLoadingRef.current = false;
     }
-    setVoicesLoaded(true);
-    const tracks: MusicTrack[] = [];
-    if (priv.status === "fulfilled") tracks.push(...priv.value.items);
-    if (pub.status === "fulfilled") tracks.push(...pub.value.items);
-    setAvailableTracks(tracks);
-    setTracksLoaded(true);
-    setCatalogLoading(false);
-  }, [catalogLoading]);
+  }, [voicesLoaded]);
+
+  const loadTracks = useCallback(async () => {
+    if (tracksLoadingRef.current || tracksLoaded) return;
+    tracksLoadingRef.current = true;
+    try {
+      const [priv, pub] = await Promise.all([
+        api.listMusicTracks("private"),
+        api.listMusicTracks("public"),
+      ]);
+      setAvailableTracks([...priv.items, ...pub.items]);
+      setTracksLoaded(true);
+    } catch {
+      // Keep tracksLoaded=false so retry is possible.
+    } finally {
+      tracksLoadingRef.current = false;
+    }
+  }, [tracksLoaded]);
 
   const pollJob = useCallback(
     (id: string, ownerConversationId: string) => {
@@ -314,28 +325,8 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         const active = await refreshHistory();
         if (active[0]) await loadConversation(active[0].id);
         if (setup === "optional") setView("account");
-        // Preload voice/track lists once so PlanCard doesn't re-fetch on mount.
-        // Use Promise.allSettled so one failure doesn't block the other.
-        if (catalogLoading) return;
-        setCatalogLoading(true);
-        void Promise.allSettled([
-          api.listVoices(),
-          api.listMusicTracks("private"),
-          api.listMusicTracks("public"),
-        ]).then(([v, priv, pub]) => {
-          if (cancelled) return;
-          if (v.status === "fulfilled") {
-            setAvailableVoices(v.value.items.filter((voice) => voice.status === "ready"));
-          }
-          setVoicesLoaded(true);
-          const tracks: MusicTrack[] = [];
-          if (priv.status === "fulfilled") tracks.push(...priv.value.items);
-          if (pub.status === "fulfilled") tracks.push(...pub.value.items);
-          setAvailableTracks(tracks);
-          setTracksLoaded(true);
-        }).finally(() => {
-          if (!cancelled) setCatalogLoading(false);
-        });
+        // Preload voice and track catalogues once after login.
+        if (!cancelled) { void loadVoices(); void loadTracks(); }
       } catch (reason) {
         const apiError = reason as ApiError;
         if (apiError.code === "authentication_required")
@@ -630,13 +621,12 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
   );
 
   function updateEditablePlan(next: React.SetStateAction<PlanDraft>) {
-    // setPlan is useState<PlanDraft | null>, but PlanCard is only rendered
-    // when plan is non-null, so this cast is safe at runtime.
-    setPlan(next as React.SetStateAction<PlanDraft | null>);
-    if (!conversationId) return;
-    const prev = latestPlanRef.current;
-    if (!prev?.id) return;
-    const resolved = typeof next === "function" ? next(prev) : next;
+    const previous = latestPlanRef.current;
+    if (!previous) return;
+    const resolved = typeof next === "function" ? next(previous) : next;
+    latestPlanRef.current = resolved;
+    setPlan(resolved);
+    if (!conversationId || !resolved.id) return;
     if (planSaveTimer.current) clearTimeout(planSaveTimer.current);
     planSaveTimer.current = setTimeout(() => {
       void api.updatePlanDraft(conversationId, {
@@ -809,7 +799,6 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
             }}
             voiceCache={availableVoices}
             trackCache={availableTracks}
-            reloadCaches={reloadCaches}
           />
         )}
         {view === "api" && <ApiSettings />}
@@ -1071,7 +1060,6 @@ function ChatView({
   setNotifyOnComplete,
   voiceCache,
   trackCache,
-  reloadCaches,
 }: {
   messages: Message[];
   draft: string;
@@ -1102,7 +1090,6 @@ function ChatView({
   setNotifyOnComplete: (enabled: boolean) => void;
   voiceCache: VoiceAsset[];
   trackCache: MusicTrack[];
-  reloadCaches: () => Promise<void>;
 }) {
   const hasMessages = messages.length > 0;
   return (
@@ -1183,7 +1170,6 @@ function ChatView({
                   starting={starting}
                   voiceCache={voiceCache}
                   trackCache={trackCache}
-                  reloadCaches={reloadCaches}
                 />
               )}
               {jobState === "running" && (
@@ -1263,7 +1249,6 @@ function PlanCard({
   starting,
   voiceCache,
   trackCache,
-  reloadCaches,
 }: {
   plan: PlanDraft;
   setPlan: React.Dispatch<React.SetStateAction<PlanDraft>>;
@@ -1271,16 +1256,9 @@ function PlanCard({
   starting: boolean;
   voiceCache: VoiceAsset[];
   trackCache: MusicTrack[];
-  reloadCaches?: () => Promise<void>;
 }) {
-  const availableVoices = voiceCache.length ? voiceCache : [];
-  const availableTracks = trackCache.length ? trackCache : [];
-  useEffect(() => {
-    // If caches are still empty (preload not yet finished or failed),
-    // ask the parent to reload instead of mutating any prop.
-    if (voiceCache.length || trackCache.length) return;
-    reloadCaches?.();
-  }, [voiceCache.length, trackCache.length, reloadCaches]);
+  const availableVoices = voiceCache;
+  const availableTracks = trackCache;
   const field = <K extends keyof PlanDraft>(key: K, value: PlanDraft[K]) =>
     setPlan((prev) => ({ ...prev, [key]: value }));
   return (
@@ -1782,6 +1760,10 @@ function ActiveGlobalPlayer({
     };
   }, []);
 
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = volume;
+  }, [volume]);
+
   async function toggle() {
     const audio = audioRef.current;
     if (!audio) return;
@@ -1822,7 +1804,6 @@ function ActiveGlobalPlayer({
         ref={audioRef}
         src={api.downloadUrl(track.workId, "mp3")}
         preload="metadata"
-        volume={volume}
         muted={muted}
         onLoadedMetadata={(event) => {
           const media = event.currentTarget;
