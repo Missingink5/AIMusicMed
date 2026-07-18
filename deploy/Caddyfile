@@ -1,5 +1,9 @@
 {
 	email {$AIMUSICMED_ACME_EMAIL}
+
+	servers :443 {
+		protocols h1
+	}
 }
 
 {$AIMUSICMED_DOMAIN} {
