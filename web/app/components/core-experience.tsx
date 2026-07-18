@@ -175,11 +175,16 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
     if (tracksLoadingRef.current || tracksLoaded) return;
     tracksLoadingRef.current = true;
     try {
-      const [priv, pub] = await Promise.all([
+      const [priv, pub] = await Promise.allSettled([
         api.listMusicTracks("private"),
         api.listMusicTracks("public"),
       ]);
-      setAvailableTracks([...priv.items, ...pub.items]);
+      const tracks: MusicTrack[] = [];
+      if (priv.status === "fulfilled") tracks.push(...priv.value.items);
+      if (pub.status === "fulfilled") tracks.push(...pub.value.items);
+      // Both settled — either one (or both) succeeded. Mark loaded even
+      // if only one scope returned data; an empty array is valid success.
+      setAvailableTracks(tracks);
       setTracksLoaded(true);
     } catch {
       // Keep tracksLoaded=false so retry is possible.
@@ -325,8 +330,6 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
         const active = await refreshHistory();
         if (active[0]) await loadConversation(active[0].id);
         if (setup === "optional") setView("account");
-        // Preload voice and track catalogues once after login.
-        if (!cancelled) { void loadVoices(); void loadTracks(); }
       } catch (reason) {
         const apiError = reason as ApiError;
         if (apiError.code === "authentication_required")
@@ -340,6 +343,17 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
       if (planSaveTimer.current) clearTimeout(planSaveTimer.current);
     };
   }, [initialView, loadConversation, refreshHistory]);
+
+  // Catalog preload is a separate effect so it doesn't re-trigger
+  // the auth/history effect.  Both load functions are async and guard
+  // themselves against concurrent re-entry.
+  useEffect(() => {
+    const preload = async () => {
+      await loadVoices();
+      await loadTracks();
+    };
+    void preload();
+  }, [loadVoices, loadTracks]);
 
   useEffect(() => {
     const resumePolling = () => {
@@ -799,6 +813,10 @@ export function AppDemo({ initialView = "chat" }: { initialView?: View }) {
             }}
             voiceCache={availableVoices}
             trackCache={availableTracks}
+            voicesLoaded={voicesLoaded}
+            tracksLoaded={tracksLoaded}
+            onLoadVoices={loadVoices}
+            onLoadTracks={loadTracks}
           />
         )}
         {view === "api" && <ApiSettings />}
@@ -1060,6 +1078,10 @@ function ChatView({
   setNotifyOnComplete,
   voiceCache,
   trackCache,
+  voicesLoaded,
+  tracksLoaded,
+  onLoadVoices,
+  onLoadTracks,
 }: {
   messages: Message[];
   draft: string;
@@ -1090,6 +1112,10 @@ function ChatView({
   setNotifyOnComplete: (enabled: boolean) => void;
   voiceCache: VoiceAsset[];
   trackCache: MusicTrack[];
+  voicesLoaded: boolean;
+  tracksLoaded: boolean;
+  onLoadVoices: () => Promise<void>;
+  onLoadTracks: () => Promise<void>;
 }) {
   const hasMessages = messages.length > 0;
   return (
@@ -1170,6 +1196,10 @@ function ChatView({
                   starting={starting}
                   voiceCache={voiceCache}
                   trackCache={trackCache}
+                  voicesLoaded={voicesLoaded}
+                  tracksLoaded={tracksLoaded}
+                  onLoadVoices={onLoadVoices}
+                  onLoadTracks={onLoadTracks}
                 />
               )}
               {jobState === "running" && (
@@ -1249,6 +1279,10 @@ function PlanCard({
   starting,
   voiceCache,
   trackCache,
+  voicesLoaded,
+  tracksLoaded,
+  onLoadVoices,
+  onLoadTracks,
 }: {
   plan: PlanDraft;
   setPlan: React.Dispatch<React.SetStateAction<PlanDraft>>;
@@ -1256,6 +1290,10 @@ function PlanCard({
   starting: boolean;
   voiceCache: VoiceAsset[];
   trackCache: MusicTrack[];
+  voicesLoaded: boolean;
+  tracksLoaded: boolean;
+  onLoadVoices: () => Promise<void>;
+  onLoadTracks: () => Promise<void>;
 }) {
   const availableVoices = voiceCache;
   const availableTracks = trackCache;
@@ -1345,6 +1383,11 @@ function PlanCard({
                 </option>
               ))}
             </select>
+            {!tracksLoaded && (
+              <button type="button" className="retry-button" onClick={() => void onLoadTracks()}>
+                曲库加载失败，点击重试
+              </button>
+            )}
           </label>
         )}
         <label>
@@ -1380,6 +1423,11 @@ function PlanCard({
             ))}
             <option value="pure_music">纯音乐，不要语音</option>
           </select>
+          {!voicesLoaded && (
+            <button type="button" className="retry-button" onClick={() => void onLoadVoices()}>
+              音色加载失败，点击重试
+            </button>
+          )}
         </label>
         <label>
           引导方式
