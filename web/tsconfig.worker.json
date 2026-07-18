@@ -7,7 +7,8 @@
     "skipLibCheck": true,
     "module": "esnext",
     "moduleResolution": "bundler",
-    "isolatedModules": true
+    "isolatedModules": true,
+    "types": ["@cloudflare/workers-types"]
   },
   "include": ["db/**/*.ts", "worker/**/*.ts"]
 }

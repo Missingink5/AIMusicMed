@@ -13,8 +13,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck:app": "tsc -p tsconfig.json --noEmit",
     "typecheck:worker": "tsc -p tsconfig.worker.json --noEmit",
-    "typecheck": "npm run typecheck:app",
-    "typecheck:all": "npm run typecheck:app && npm run typecheck:worker",
+    "typecheck": "npm run typecheck:app && npm run typecheck:worker",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

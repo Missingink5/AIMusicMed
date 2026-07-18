@@ -34,9 +34,10 @@ test("PlanCard field updater uses functional setPlan for concurrent safety", () 
 
 // Blocking-2: separate catalog loading effect
 test("catalog loading is in its own useEffect separate from auth init", () => {
-  // The catalog effect depends on loadVoices and loadTracks, not initialView.
-  assert.match(ui, /Catalog preload is a separate effect/);
-  assert.match(ui, /\[loadVoices,\s*loadTracks\]/);
+  // Catalog preload runs only after auth (user), in parallel, depending on loadVoices/loadTracks.
+  assert.match(ui, /if\s*\(\s*!user\s*\)\s*return/);
+  assert.match(ui, /Promise\.all\s*\(\s*\[\s*loadVoices\s*\(\s*\)\s*,\s*loadTracks\s*\(\s*\)\s*\]\s*\)/);
+  assert.match(ui, /\[user,\s*loadVoices,\s*loadTracks\]/);
 });
 
 // Blocking-2: retry buttons in PlanCard
@@ -56,10 +57,10 @@ test("loadTracks uses Promise.allSettled so one scope failure preserves the othe
   assert.match(ui, /pub\.status\s*===\s*"fulfilled"/);
 });
 
-// Blocking-2: loading refs prevent concurrent requests
-test("catalog loaders use loading refs to prevent duplicate concurrent requests", () => {
-  assert.match(ui, /voicesLoadingRef\.current/);
-  assert.match(ui, /tracksLoadingRef\.current/);
+// Blocking-2: loading state prevents concurrent requests
+test("catalog loaders check loading state before starting a new request", () => {
+  assert.match(ui, /if\s*\(\s*voicesLoading\s*\|\|\s*voicesLoaded\s*\)\s*return/);
+  assert.match(ui, /if\s*\(\s*tracksLoading\s*\|\|\s*tracksLoaded\s*\)\s*return/);
 });
 
 // P1-2: Service Worker migration
@@ -114,6 +115,28 @@ test("metadataBase uses NEXT_PUBLIC_SITE_URL with localhost fallback only as def
     "utf8",
   );
   assert.match(layout, /NEXT_PUBLIC_SITE_URL/);
+});
+
+// P0: all PlanCard setPlan calls use functional updater form
+test("PlanCard music source onChange uses functional setPlan(previous => ...)", () => {
+  assert.match(ui, /setPlan\s*\(\s*\(\s*previous\s*\)\s*=>\s*\(\s*\{[^}]*music_source/);
+});
+
+test("PlanCard voice mode onChange uses functional setPlan", () => {
+  // Both voice_mode branches use functional updater.
+  const voiceUpdates = ui.match(/setPlan\s*\(\s*\(\s*previous\s*\)\s*=>\s*\(\s*\{/g);
+  assert.ok(voiceUpdates && voiceUpdates.length >= 2, "expected >=2 functional setPlan calls in voice onChange");
+});
+
+// P0: allSettled dual-failure keeps loaded=false
+test("loadTracks keeps tracksLoaded=false when both scopes fail", () => {
+  assert.match(ui, /!privateOk\s*&&\s*!publicOk/);
+  assert.match(ui, /setTracksError\s*\(\s*true\s*\)/);
+});
+
+// P1: catalog preload guarded by user
+test("catalog preload only runs after user is authenticated", () => {
+  assert.match(ui, /if\s*\(\s*!user\s*\)\s*return/);
 });
 
 // Catalog loading states wired through ChatView to PlanCard
